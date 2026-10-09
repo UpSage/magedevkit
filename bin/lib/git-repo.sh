@@ -40,12 +40,36 @@ valid_git_name() {
     [ -n "$1" ] && [ "${#1}" -le 100 ] && [[ "$1" != *[$'\n\r<>']* ]]
 }
 
-# repo_ensure_identity DIR — asks for this repo's commit name and email when
-# it has none of its own yet (once), and saves them in DIR/.git/config.
+# github_identity TOKEN — "NAME<TAB>EMAIL" of the GitHub account the token
+# belongs to (api.github.com, the same party the clone just talked to; how
+# NAME and EMAIL are chosen: bin/lib/github-identity.py). Prints nothing if
+# GitHub can't be asked. The token goes in a header read from stdin
+# (curl -K -), never on a command line.
+github_identity() {
+    local token="$1" user emails
+    user="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+        | curl -fsS --max-time 15 -K - -H 'Accept: application/vnd.github+json' https://api.github.com/user 2>/dev/null)" \
+        || return 0
+    emails="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+        | curl -fsS --max-time 15 -K - -H 'Accept: application/vnd.github+json' https://api.github.com/user/emails 2>/dev/null)" \
+        || emails="[]"
+    USER_JSON="$user" EMAILS_JSON="$emails" python3 -I "$(dirname "${BASH_SOURCE[0]}")/github-identity.py"
+}
+
+# repo_ensure_identity DIR [NAME EMAIL] — makes sure this repo has its own
+# commit name and email (DIR/.git/config). Given NAME and EMAIL (e.g. from
+# github_identity), they're used as they are; otherwise it asks once.
 # Without anyone to ask, it says how to set them later and carries on.
 repo_ensure_identity() {
-    local dir="$1" name email
+    local dir="$1" name="${2:-}" email="${3:-}"
     [ -d "$dir/.git" ] || return 0
+    if [ -z "$(git -C "$dir" config --local user.email 2>/dev/null)" ] \
+        && valid_git_name "$name" && valid_git_email "$email"; then
+        git -C "$dir" config --local user.name "$name"
+        git -C "$dir" config --local user.email "$email"
+        log "✓ Commits in magento/ will be made as $name <$email> (your GitHub account; change it on the dashboard's Git tab)"
+        return 0
+    fi
     if [ -n "$(git -C "$dir" config --local user.email 2>/dev/null)" ]; then
         log "✓ Commits in magento/ are made as $(git -C "$dir" config --local user.name) <$(git -C "$dir" config --local user.email)>"
         return 0

@@ -2,7 +2,7 @@
 
 A Magento 2 workbench: Docker stacks for every local store, browser wizards (setup, refresh,
 version, build, pipeline), a dashboard with environments, builds and Git, and the EC2 deploy kit.
-Formerly *magento2-docker-wizard*. The command is `mrn`.
+The command is `mrn`.
 
 Docker Compose configuration for a Magento 2 runtime, for **local development**. This
 repo controls the **infrastructure** the application runs on (Nginx, Varnish, PHP-FPM, MariaDB,
@@ -42,8 +42,8 @@ Then:
 ```bash
 mrn new m249                      # create ~/Sites/m249 and open its setup wizard (--terminal, --no-setup)
 cd ~/Sites/m249
-mrn magento cache:flush           # bin/magento for this instance
-mrn composer install              # bin/composer
+mrn magento cache:flush           # bin/magento in this instance's php container
+mrn composer install              # composer, likewise
 mrn platform up -d                # docker compose for this stack (ps, logs -f php, stop, …)
 mrn refresh-wizard                # or setup-wizard / version-wizard; terminal: setup / refresh / version
 mrn mode production               # also: ownership single|two-owner, permissions apply|lock|unlock
@@ -77,10 +77,6 @@ path the scripts use.
   the dashboard's Overview tab. It removes the containers, the data volumes and the whole folder.
   The dashboard first shows uncommitted or unpushed work in `magento/` and refuses to go on until
   you confirm it may be lost.
-- **Older instances** had a `bin/` of launcher scripts; `mrn new <name>` on such an instance removes
-  them (only the generated ones) and leaves `.env` and data alone.
-- **The older layout still works:** a checkout called `platform/` next to `magento/`, with its own
-  `env/.env.local`; there you keep using its `bin/` directly.
 
 ## Layout
 
@@ -108,11 +104,14 @@ magerunner/
 │       ├── bootstrap.sh        Start of every bin/local/* script: ui, env, util, paths
 │       ├── ui.sh               Prompts, progress, log/fail/cancel, the lock — terminal and browser
 │       ├── env.sh util.sh      Env-file reads/writes, validators, version compare, composer rules
-│       ├── paths.sh            Where an instance's files live (or a legacy checkout's)
+│       ├── paths.sh            Where an instance's files live
 │       ├── *-engine.sh         The flows: setup, refresh, version, rebuild, pipeline, mode, …
 │       ├── setup/              Setup's steps, 01-preflight … 11-finish
 │       ├── db-backup.sh        Every database call (db_client), dumps, restore
-│       ├── git-repo.sh         Per-repo git identity and saved login for magento/
+│       ├── prod-urls.sh        The production URLs a dump is rewritten from, read from the dump
+│       │                       itself by dump-config.py
+│       ├── git-repo.sh         Per-repo git identity and saved login for magento/ (the identity
+│       │                       from the GitHub account: github-identity.py)
 │       ├── aws-storage.sh tools.sh terraform.sh   S3 setup; verified installs of mkcert,
 │       │                       direnv, the AWS CLI and Terraform; keys/ (AWS CLI signing key)
 │       └── web-wizard/         The browser wizard (server.py) and the dashboard (dashboard.py,
@@ -136,8 +135,6 @@ magerunner/
 Generated per instance, never in this repo: the rendered vhost (`<instance>/nginx/default.conf`),
 the mkcert certificate (`<instance>/certs/`), logs and operation records (`<instance>/logs/`),
 database backups and version snapshots (`<instance>/db/`), and the settings (`<instance>/.env`).
-In the older layout (a `platform/` checkout next to `magento/`) the same files live in the
-checkout itself: `env/.env.local`, `config/nginx-local/default.conf` and `config/nginx-local/certs/`.
 
 ## Day-to-day commands
 
@@ -167,8 +164,7 @@ mrn dashboard                      # every instance on this machine (see "Dashbo
 ```
 
 The wrappers always use the instance's `.env` and both compose files, and refuse to run (pointing at
-`mrn setup-wizard`) until that `.env` exists. In an older-layout checkout, run the same scripts
-directly from its `bin/` (`bin/platform ps`, `bin/magento …`, `bin/local/setup-wizard`).
+`mrn setup-wizard`) until that `.env` exists.
 
 With `FILE_OWNERSHIP=single`, a bare `mrn platform exec php ...` (no `--user`) already runs as you —
 the same identity `mrn magento`/`mrn composer` use. With `two-owner` it runs as php-fpm's
@@ -177,183 +173,99 @@ See "Magento mode & file permissions" below.
 
 ## Local development setup
 
-**Automated (the normal way).** Once the prerequisites below are installed:
+**Before you start:** Docker Desktop with WSL2 integration (on Windows), `git`, `curl` and
+`python3`. Anything else a step needs — mkcert, and for S3 media the AWS CLI and direnv — setup
+installs into `~/.local/bin` when it's missing, after checking it against a pinned checksum (the AWS
+CLI against AWS's signature). [`LOCAL_SETUP.md`](LOCAL_SETUP.md) walks through installing WSL2 and
+Docker.
+
+**Create a store:**
 ```bash
 bin/local/install-mrn       # once: puts `mrn` on your PATH
 mrn new m249                # creates ~/Sites/m249 and opens its setup wizard in the browser
-                            # (--terminal for the same questions in the terminal)
+                            # (--terminal: the same questions in the terminal)
 ```
-Setup walks through steps 2–14 below by itself. It asks for credentials inline where a real value is
-needed, automates everything else, and ends with the hosts-file line (step 8), the one manual step
-left. It's safe to re-run: every step skips itself when it's already done. The manual steps are what
-it does under the hood, useful for understanding or debugging one step on its own.
+Setup is safe to re-run: every step skips itself when it's already done.
 
-Where things live, for the manual steps:
+**What setup does**, step by step (the same steps appear in the wizard's sidebar):
 
-| | Instance (`mrn new`) | Older layout (`platform/` next to `magento/`) |
-|---|---|---|
-| Settings | `<instance>/.env` | `env/.env.local` |
-| Magento code | `<instance>/magento/` | `../magento/` |
-| Generated vhost | `<instance>/nginx/default.conf` | `config/nginx-local/default.conf` |
-| Certificates | `<instance>/certs/` | `config/nginx-local/certs/` |
-| Commands | `mrn …` (inside the instance) | `bin/…` (inside the checkout) |
+1. **Welcome & checks** — Docker, mkcert, the instance folders.
+2. **Magento source** — a fresh download from the `m2/` catalog (see "Fresh Magento install"), or a
+   clone of your store's repository (see "Git identity and login" below), or the code already in
+   `magento/`.
+3. **Store data** — the database dump to import (upload it on the page, or give a path or URL), and
+   whether it's a copy of production (its URLs get rewritten) or already prepared for local use.
+4. **Project** — the local domain (default `<name>.test`, a real hostname with a dot), the admin path,
+   the search-index prefix, and optional URL overrides.
+5. **Database login** — the MariaDB names and passwords, asked only while the database volume doesn't
+   exist yet.
+6. **Mode & versions** — Magento mode, file ownership, and the stack versions the `m2/` catalog
+   recommends for this Magento version.
+7. **Review & start** — everything above on one screen; nothing heavy has run yet (**Change answers**
+   goes back with your answers kept).
+8. **Containers** — the mkcert certificate for the domain, the images, the stack (behind the shared
+   edge proxy), and a wait until every service is healthy.
+9. **Dependencies** — `composer install`, or `composer create-project` for a fresh download.
+10. **Magento install** — `setup:install` for a new store (admin account asked on the page), or a
+    check that an existing install is complete.
+11. **Media & data** — the media storage (local disk or S3) and the database import, if any (see
+    "Refreshing local data").
+12. **Finish** — mode, caches, Varnish and search configured; a summary with links and the commands
+    you'll use day to day.
 
-The steps below use the instance paths.
+**Git identity and login.** A clone over HTTPS asks for a GitHub username and a personal access
+token, used for that clone only — or, if you tick **Remember**, saved for **this repo only** in
+`magento/.git/credentials` (0600) through a repo-local credential helper. The **name and email for
+commits in this repo** come from that same GitHub account (its display name, and its primary email
+if the token may read it — otherwise its public email, or GitHub's `…@users.noreply.github.com`
+address for it, which still credits the commits to the account) and are saved in
+`magento/.git/config`. They're only asked for when there's no token to ask GitHub with (an SSH
+clone, a login your system already had, or an existing `magento/`). Nothing goes into your global
+git config, so a company store and a personal one on the same machine never share an identity or a
+token; change either on the dashboard's Git tab. Composer credentials go in `magento/auth.json`
+(repo.magento.com keys, plus any private repos composer.json declares).
 
-**1. Prerequisites**
-- Docker Desktop with WSL2 integration enabled (if on Windows)
-- [`mkcert`](https://github.com/FiloSottile/mkcert), and — only for S3 media — the AWS CLI v2 and
-  [`direnv`](https://direnv.net/). Setup installs whichever is missing into `~/.local/bin`, each
-  checked against a pinned checksum (the AWS CLI against AWS's signature) before it's used.
+**Production URLs.** Importing a production dump needs no production facts from you: the refresh
+reads the live site's URLs and cookie domain from the dump itself (see "Refreshing local data") and
+saves them as `PROD_BASE_URL` / `PROD_MEDIA_URL` / `PROD_COOKIE_DOMAIN` in `.env` for reference.
 
-**2. Magento code and its git identity**
-
-Setup either downloads a fresh Magento (see "Fresh Magento install" below) or clones your store's
-repository into `<instance>/magento/`. A clone over HTTPS asks for your GitHub username and a
-personal access token, used for that clone only — or, if you tick **Remember**, saved for **this
-repo only** in `magento/.git/credentials` (0600) through a repo-local credential helper. Setup then
-asks for the **name and email for commits in this repo** and saves them in `magento/.git/config`.
-Nothing goes into your global git config, so a company store and a personal one on the same machine
-never share an identity or a token. Change them later on the dashboard's Git tab, or:
-```bash
-git -C magento config user.name "Your Name"
-git -C magento config user.email you@example.com
-```
-Composer credentials go in `magento/auth.json`: real repo.magento.com keys, plus any private repos
-(Amasty, Meetanshi, bird.eu, etc.) declared in composer.json.
-
-**3. Settings file** — `mrn new` creates `<instance>/.env` (0600) from `env/.env.local.example`,
-with `APP_NAME` set to the instance name.
-`DB_NAME`/`DB_USER`/`DB_PASSWORD`/`DB_ROOT_PASSWORD` initialize MariaDB on its very first start
-(defaults: `magento`). Setup asks for them once, only while the `${APP_NAME}-db-data` volume doesn't
-exist yet; the DB refresh and `setup:install` read the same values.
-
-**4. Local domain & Magento URLs** — the default domain is `<name>.test`. `APP_DOMAIN` in `.env`
-drives `base_url`, the TLS certificate (step 6) and the generated vhost (`<instance>/nginx/default.conf`,
-rendered from `config/nginx-local/default.conf.template` — never edit the generated file, it's
-overwritten). Setup only accepts a real hostname (letters, digits, hyphens, at least one dot).
-Three more fields are optional overrides — leave them blank to keep Magento's own defaults
-(media/static URLs derived from `base_url`; cookie domain left to the current host):
+**URL overrides** (optional, in `.env`) — leave them blank to keep Magento's own defaults (media and
+static URLs derived from `base_url`; cookie domain left to the current host). The refresh reapplies
+them on every run, since a reimport would reset them:
 ```
 BASE_MEDIA_URL=
 BASE_STATIC_URL=
 COOKIE_DOMAIN=
 ```
-The refresh reapplies whichever of these you set on every run — the DB reimport would otherwise
-reset them.
 
-For importing a production dump, the live site's own facts, so the refresh knows what to rewrite an
-imported dump's URLs and cookie domain *from*. Setup checks them: full `http(s)://` URLs (a trailing
-slash is added) and a domain like `.example.com`.
-```
-PROD_BASE_URL=<production's base URL, e.g. https://example.com/>
-PROD_MEDIA_URL=<production's media/CDN URL>
-PROD_COOKIE_DOMAIN=<production's cookie domain>
-```
+**S3 media** (optional). Choosing Amazon S3 in step 11 asks for an AWS profile (from `~/.aws`, or a
+new one) and a bucket, checks both work, and writes `<instance>/.envrc` with the profile **name**
+only — the keys stay in `~/.aws/credentials`. See "S3-backed media" below.
 
-**5. AWS CLI profile & Magento remote storage** (only for S3-backed media). Setup asks which AWS
-profile to use (from `~/.aws`, or a new one) and which bucket, checks both work, and writes
-`<instance>/.envrc` with the profile **name** only — keys stay in `~/.aws/credentials`, outside the
-repo. By hand:
-```bash
-cat > .envrc <<'EOF'
-export AWS_PROFILE=<pick-a-profile-name>
-export AWS_S3_PROFILE=<pick-a-profile-name>
-EOF
-direnv allow .
-aws configure --profile <pick-a-profile-name>
-```
-Then choose how Magento serves `pub/media`, in `.env`:
-```
-REMOTE_STORAGE_DRIVER=aws-s3      # or "file" to serve pub/media from local disk instead
-REMOTE_STORAGE_BUCKET=<your-bucket>
-REMOTE_STORAGE_REGION=us-east-2
-REMOTE_STORAGE_KEY=<same access key as above>
-REMOTE_STORAGE_SECRET=<same secret as above>
-```
-With `REMOTE_STORAGE_DRIVER=file`, leave `BUCKET`/`REGION`/`KEY`/`SECRET` blank — the refresh skips
-S3 configuration entirely.
+**After setup — the only steps you do yourself:**
 
-**6. HTTPS certificate** (mkcert)
-```bash
-cd certs
-mkcert -install          # once per machine: your local certificate authority (may warn about the
-                         # system trust store without sudo — fine)
-mkcert "$APP_DOMAIN"
-```
-The certificate authority is one per user (`~/.local/share/mkcert/`, its key readable only by you),
-so every instance's certificate is trusted once the browser trusts it; each instance gets its own
-certificate for its own domain.
-
-**7. Trust the CA in your browser**: if your browser runs outside this environment (e.g. Windows
-host with Docker in WSL2), open `\\wsl$\<distro>\home\<user>\.local\share\mkcert\rootCA.pem` in
-Windows Explorer, double-click → **Install Certificate** → **Local Machine** → **Trusted Root
-Certification Authorities**, then restart your browser. Otherwise `mkcert -install` handles it
-directly.
-
-**8. Hosts file** (Windows, not WSL2 — the browser resolves DNS there): edit
-`C:\Windows\System32\drivers\etc\hosts` as Administrator (one line per instance — they all point
-at the shared edge proxy on 127.0.0.1, see "Running several stacks at once"):
-```
-127.0.0.1 m249.test
-```
-
-**9. Build and start the stack**
-```bash
-mrn platform build
-mrn platform up -d
-mrn platform ps   # wait until every service shows healthy
-```
-
-**10. Install Composer dependencies**
-```bash
-mrn composer install
-```
-
-**11. First-time Magento install** — bootstraps `app/etc/env.php`; real data comes in step 12
-```bash
-mrn magento setup:install \
-  --base-url=https://m249.test/ \
-  --db-host=mariadb --db-name=magento --db-user=magento --db-password=magento \
-  --backend-frontname=admin \
-  --admin-firstname=Local --admin-lastname=Admin --admin-email=you@example.com \
-  --admin-user=admin --admin-password='Admin123!' \
-  --language=en_US --currency=USD --timezone=America/New_York \
-  --use-rewrites=1 --use-secure=0 --use-secure-admin=0 \
-  --search-engine=opensearch --opensearch-host=opensearch --opensearch-port=9200 \
-  --opensearch-index-prefix=magento2 --opensearch-enable-auth=0 \
-  --amqp-host=rabbitmq --amqp-port=5672 --amqp-user=magento --amqp-password=magento --amqp-virtualhost=/ \
-  --session-save=redis --session-save-redis-host=valkey --session-save-redis-port=6379 \
-  --cache-backend=redis --cache-backend-redis-server=valkey --cache-backend-redis-port=6379 --cache-backend-redis-db=0 \
-  --page-cache=redis --page-cache-redis-server=valkey --page-cache-redis-port=6379 --page-cache-redis-db=1
-```
-> If this fails on a `pub/media` permissions check, run
-> `mrn platform exec --user "$(id -u):$(id -g)" php mkdir -p /var/www/html/pub/media` first and
-> retry — the installer checks for the directory but won't create it itself.
-
-**12. Run the full refresh** — pulls real DB/media data and finishes configuration
-```bash
-mrn refresh
-```
-See "Refreshing local data" below for exactly what this does. Takes 20–40 minutes the first time.
-
-**13. Customize the admin URI** (optional)
-```bash
-mrn magento setup:config:set --backend-frontname=admin -n
-mrn magento cache:flush
-```
-
-**14. Verify**
-- `https://<APP_DOMAIN>/` — storefront
-- `https://<APP_DOMAIN>/admin/` (or whatever frontname you chose) — admin;
-  credentials come from the imported database, not the ones set in step 11
-- `http://localhost:<MAILPIT_HTTP_PORT>/` — Mailpit (8025 unless another stack has it; setup's
-  summary prints the real port)
+1. **Hosts file** (Windows — the browser resolves names there, not in WSL): add one line per
+   instance to `C:\Windows\System32\drivers\etc\hosts` as Administrator; they all point at the
+   shared edge proxy (see "Running several stacks at once"). The finish screen shows the exact line:
+   ```
+   127.0.0.1 m249.test
+   ```
+2. **Trust the local certificate authority** in a browser running outside WSL (e.g. Chrome on
+   Windows): open `\\wsl$\<distro>\home\<user>\.local\share\mkcert\rootCA.pem` in Explorer →
+   **Install Certificate** → **Local Machine** → **Trusted Root Certification Authorities**, then
+   restart the browser. Once per machine: the authority is one per user (its key readable only by
+   you), and every instance's certificate is signed by it.
+3. **Check it:**
+   - `https://<APP_DOMAIN>/` — the storefront;
+   - `https://<APP_DOMAIN>/<admin path>/` — the admin (for an imported database, its own admin
+     accounts);
+   - `http://localhost:<MAILPIT_HTTP_PORT>/` — Mailpit (setup's summary prints the port).
 
 ### Fresh Magento install (vanilla, no data import)
 
-`mrn setup` → **"2) Download a new, empty Magento store"** downloads a brand-new Magento
-with `composer create-project` instead of using an existing checkout or importing a database:
+Choosing **Download a new, empty Magento store** in setup's "Magento source" step downloads a
+brand-new Magento with `composer create-project` instead of cloning a repository or importing a
+database:
 
 1. Pick the **version** and **security patch** — menus are built from the folders in
    [`m2/`](m2/README.md) (`m2/2.4.8/`, `m2/2.4.8/p1` … `p5`, `m2/2.4.9/`, …). Adding a folder adds a
@@ -363,8 +275,8 @@ with `composer create-project` instead of using an existing checkout or importin
    They're kept outside `magento/` until the download finishes (create-project needs an empty
    directory), then saved to `magento/auth.json`.
 3. The rest of the wizard runs as usual (project config, DB credentials, mode/ownership, TLS,
-   Docker). Skipped for a fresh install: the database-import and production-facts prompts, and the
-   S3 data sync — `mrn refresh` isn't run.
+   Docker). Skipped for a fresh install: the database import and the S3 data sync — `mrn refresh`
+   isn't run.
 4. After the stack is up: `create-project` → `composer install` → **admin account prompts**
    (name, email, username, password — 7+ chars with letters and digits; the password is never
    saved) and a **Luma sample data** y/N question → `setup:install` → sample data (if chosen) →
@@ -393,29 +305,39 @@ Magento rebuild. Both take the instance's lock, so they never overlap a setup, a
 a dashboard action. The work itself lives under `bin/lib/` (`sync-db-config-engine.sh`,
 `db-refresh-engine.sh`, `refresh-engine.sh`).
 
-- **`mrn sync-db`** — asks each run for a **database source**: a local file path, or an HTTP(S)
-  URL (fetched with `curl`, not tied to S3/the `aws` CLI) — a teammate's link, an RDS export, a
-  completely different project's dump. This is required — blank is rejected and asked again (and without a
-  terminal the run stops), there's no default and no silent fall-back to pulling from S3. No presigned link is ever generated or
-  displayed either, since a presigned URL is itself a temporary bearer credential for the dump. It
-  asks whether the dump still contains production configuration (if so, its URLs are rewritten
-  using `PROD_BASE_URL`/`PROD_MEDIA_URL`/`PROD_COOKIE_DOMAIN` from `.env`), and asks for
-  *this local site's own* domain/media/static URLs (defaulted to whatever's already in
-  `.env`), writing any change straight back to that file. Changing the domain here does
-  **not** regenerate the TLS cert or the instance's `nginx/default.conf` — re-run
-  `mrn setup-wizard` for that. It also asks where Magento should store media files (local filesystem or S3, defaulted
-  to the current `REMOTE_STORAGE_DRIVER`) — choosing S3 walks through the same AWS CLI
-  profile/bucket verification `mrn setup` does (deriving region/key/secret from the profile,
-  never asking for a raw secret key directly), and any change is written back to `.env`
-  too, so `mrn refresh` (which re-reads the file right after `sync-db` returns) applies it to
-  Magento in the same run. All of this is asked fresh on every standalone run; it's skipped only
-  when `mrn setup` is the one driving the call, since by then it has already resolved these
-  into `.env` itself. It then sanitizes the dump (strips `DEFINER` clauses, rewrites the
-  source base URL to the local domain and the source media URL to `BASE_MEDIA_URL`), prompts for an
-  optional, comma-separated list of tables whose data to strip (nothing by default; table names
-  only — letters, digits and `_`), drops and reimports the database, and repoints OpenSearch at the
-  local container (a production import otherwise leaves OpenSearch pointed at a private AWS IP
-  unreachable from Docker).
+- **`mrn sync-db`** asks, on every standalone run (setup answers these itself when it drives the
+  import):
+  - the **database source** — a local file path or an HTTP(S) URL (fetched with `curl`): a
+    teammate's link, an RDS export, another project's dump. It's required: there's no default and no
+    silent fall-back to S3, and no presigned link is ever generated or shown (one is a temporary
+    credential for the dump). Without a terminal, a blank answer stops the run;
+  - whether the dump is a **copy of production** (its URLs are then rewritten, see below);
+  - **this site's** domain and optional media/static URL overrides, written back to `.env`.
+    Changing the domain here doesn't regenerate the certificate or `nginx/default.conf` — re-run
+    `mrn setup-wizard` for that;
+  - **media storage** (local disk or S3, defaulting to the current `REMOTE_STORAGE_DRIVER`) — S3
+    goes through the same profile and bucket checks as setup, and the change reaches Magento in the
+    same `mrn refresh`;
+  - optional **tables whose data to strip** (comma-separated; table names only — letters, digits,
+    `_`).
+
+  Then it strips `DEFINER` clauses, rewrites the URLs, drops and reimports the database, and points
+  OpenSearch at the local container (a production import would otherwise leave it pointing at the
+  production search host).
+- **Where the dump came from is read from the dump.** Right after the dump is checked, the refresh
+  reads its `core_config_data` (`bin/lib/dump-config.py`, a few seconds even for a multi-GB dump —
+  it stops once that table is past) and logs it: "The dump is from https://www.example.com/ (media:
+  https://cdn.example.com/media/; cookie domain: .example.com)". It then rewrites **every** one of
+  those to this site: the unsecure and secure base URLs (they can differ), the link URLs, the media
+  URLs (a CDN included), and the cookie domain when there is one. Nothing is typed in, so nothing
+  can be mistyped.
+  - The values are saved to `.env` as `PROD_*`. A later dump that doesn't carry them (no
+    `core_config_data`) falls back to those; with none saved either, the refresh asks — and stops if
+    nobody can answer.
+  - A dump that already uses this site's domain is imported without rewriting.
+  - Websites or store views with **their own URLs** (multi-site stores) are listed with a warning:
+    they keep their production values, and the log shows the `mrn magento config:set --scope=…`
+    command to point them at this site.
 - **Replacing the database always needs a yes.** On the refresh page you type the project name; in
   a terminal or on the setup page you answer the question. With nobody to answer (no terminal, no
   page) the run stops before anything is dropped — a script can confirm in advance with
@@ -536,31 +458,18 @@ stack (backend `nginx:8080`, purge ACL = the RFC1918 private ranges, which cover
 Docker auto-assigns `up-network`; `ssl_offloaded_header` →
 `X-Forwarded-Proto`, `grace_period` → `300`).
 
-**Two one-time setup steps** — neither is part of `mrn refresh`, because both
-live in `app/etc/env.php`, which a DB reimport never touches:
-
-```bash
-# Tells Magento where to send live PURGE requests when cache is invalidated (a product save,
-# cache:flush, etc). The admin-UI "System > Full Page Cache > Varnish" fields do NOT control
-# this — they only feed the "Export VCL" button. Without this, Magento falls back to PURGE-ing
-# whatever Host header the current request happened to have, which silently never reaches Varnish.
-mrn magento setup:config:set --http-cache-hosts="varnish:80" -n
-
-# Turns on Magento's own full-page cache type. If this is off, every response comes back
-# Cache-Control: no-store and Varnish has nothing cacheable to work with, regardless of VCL.
-mrn magento cache:enable full_page
-```
-
-`mrn refresh` *does* reapply these every run (safe to repeat, and `sync-db`'s DB reimport wipes
-`core_config_data`, which is where they live) — only the two commands above need running by hand,
-once:
-```bash
-mrn magento config:set system/full_page_cache/caching_application 2 -n
-mrn magento config:set system/full_page_cache/varnish/access_list "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16" -n
-mrn magento config:set system/full_page_cache/varnish/backend_host nginx -n
-mrn magento config:set system/full_page_cache/varnish/backend_port 8080 -n
-mrn magento config:set system/full_page_cache/varnish/grace_period 300 -n
-```
+**What configures it:**
+- **Database settings** (`system/full_page_cache/…`: Varnish as the cache, its access list,
+  backend `nginx:8080`, grace period) — applied by setup and reapplied by every `mrn refresh`
+  (`bin/lib/magento-config-engine.sh`), since a database import replaces them.
+- **Two `app/etc/env.php` settings** — where Magento sends PURGE requests
+  (`--http-cache-hosts=varnish:80`; the admin's Varnish fields only feed "Export VCL") and the
+  `full_page` cache type being on. Setup sets both for a **fresh download**. For a **cloned
+  store**, run them once (an import never touches `env.php`, so they stay set):
+  ```bash
+  mrn magento setup:config:set --http-cache-hosts="varnish:80" -n
+  mrn magento cache:enable full_page
+  ```
 
 **Verify it's working:**
 ```bash
@@ -703,10 +612,10 @@ The page's DOM helpers, icons and component recipes live in `ui/kit.js`, shared 
 mrn dashboard                 # opens http://127.0.0.1:<port>/?token=… in your browser
 mrn dashboard --no-browser    # print the link only
 mrn dashboard --port 8800     # fixed port (default: the one it used last time)
-mrn dashboard --scan ~/Sites --scan /srv/stores   # where to look for older-layout checkouts too
+mrn dashboard --scan ~/Sites --scan /srv/stores   # extra folders to look for instances in
 ```
 
-One persistent page for **every instance (and older-layout checkout) on this machine**, laid out like
+One persistent page for **every instance on this machine**, laid out like
 the Magento admin: a dark sidebar lists the environments and, for the open one, its sections (on a
 narrow screen the sections become tabs). The wizard pages use the same layout, with their steps in
 the sidebar. The platform version (the repo's `VERSION` file) is at the foot of every page. It shows:
@@ -770,7 +679,7 @@ dashboard only calls them.
 browser ──> dashboard.py   (127.0.0.1 only; status + JSON API)
               ├─ envs.py    discovery + status: docker inspect, env files, git, /health_check.php
               ├─ ops.py     whitelisted actions and workflows, operation history
-              │    ├─ locks.py    the checkout lock (.wizard.lock)
+              │    ├─ locks.py    the instance lock (.wizard.lock)
               │    ├─ oplogs.py   log tails + redaction
               │    ├─ destroy.py  deleting an instance
               │    └─ oprun.py    detached runner: one operation, its log and record
@@ -779,33 +688,29 @@ browser ──> dashboard.py   (127.0.0.1 only; status + JSON API)
                             redaction, records, child-process environment (no tokens)
                     │
                     ▼
-<repo>/bin/platform | bin/magento | bin/composer | bin/mode/* | bin/lib/web-wizard/launch.sh
-   (with PLATFORM_INSTANCE_DIR=<instance>; older-layout checkouts use their own bin/)
+<repo>/bin/platform | bin/magento | bin/composer | bin/mode/* | bin/local/* | bin/lib/web-wizard/launch.sh
+   (run with PLATFORM_INSTANCE_DIR=<instance>)
 ```
 
 - **Discovery.** There is no registry and nothing to keep up to date. The dashboard combines two
   sources:
   - **Docker labels** on every container, running or stopped. The compose project
     (`<APP_NAME>-platform`) says which stacks exist, and `platform.instance_dir` says which folder
-    each belongs to. Stacks started before that label existed fall back to compose's
-    `working_dir` (`<checkout>/compose`).
+    each belongs to.
   - **A folder scan**, two levels deep, for environments with no containers yet. The default is
     the folder holding the repo (e.g. `~/Sites`); change it with `--scan`.
 
-  An environment is either an **instance folder** (`.platform-instance` + `.env`) or an
-  **older-layout checkout** (`bin/platform`, `compose/docker-compose.yml`, `env/.env.local`). Its
-  `APP_NAME` is its id: setup keeps that unique. An instance whose `APP_NAME` doesn't match its
-  folder name, or whose platform repo has gone, is listed read-only. Values come from its env
-  file; for older checkouts `env/stack.env` takes precedence where it exists. Checkouts set up as
-  a dev server (`env/.env.dev`) are listed read-only. Anything that can't be determined is shown
-  as **Unknown**.
+  An instance is a folder with `.platform-instance` and `.env`. Its `APP_NAME` is its id: `mrn new`
+  and setup keep that unique. An instance whose `APP_NAME` doesn't match its folder name, or whose
+  platform repo has gone, is listed read-only. Values come from its `.env`; anything that can't be
+  determined is shown as **Unknown**.
 - **Health.**
   - Container state and Docker healthchecks. Nginx, PHP-FPM, Varnish and Mailpit have no
     healthcheck and show "Running (no healthcheck)".
   - OpenSearch's cluster colour comes from its healthcheck output.
   - **Magento** is checked separately with a real request to `https://<APP_DOMAIN>/health_check.php`
     through the edge proxy. A running container doesn't mean a working store.
-- **Actions run the checkout's own scripts.** Each action is a fixed command line in
+- **Actions run this repo's scripts for the instance.** Each action is a fixed command line in
   `ops.ACTIONS`:
   - `bin/platform up -d`, `stop`, `restart [service]`;
   - `bin/magento cache:flush`, `cache:clean`, `indexer:status`, `indexer:reindex`;
@@ -824,20 +729,20 @@ browser ──> dashboard.py   (127.0.0.1 only; status + JSON API)
   - **Cancel** is offered only for start/stop/restart and the Git tab's fetch/pull/push. Commands
     that run inside the php container keep running there even if the client is stopped, so they
     always run to the end.
-- **Workflows run the checkout's own wizard.** Setup, Refresh, Version, Pipeline, Rebuild and
-  Ownership start `bin/lib/web-wizard/launch.sh <flow> --no-browser` in that checkout and open its page in a new
+- **Workflows run the instance's wizard.** Setup, Refresh, Version, Pipeline, Rebuild and
+  Ownership start `bin/lib/web-wizard/launch.sh <flow> --no-browser` for that instance and open its page in a new
   tab. Its questions, uploads, progress, typed confirmations and Cancel are unchanged. Reopen it
   from **Operations** while it runs.
-- **Locks.** Each checkout's `.wizard.lock` is the same lock setup/refresh/version take. Dashboard
+- **Locks.** Each instance's `.wizard.lock` is the same lock setup/refresh/version take. Dashboard
   actions that change something take it too, and are refused (with the holder's PID) while a
-  wizard or another action runs in that checkout. Read-only views and other checkouts are never
+  wizard or another action runs in that instance. Read-only views and other instances are never
   blocked.
 - **Files it writes** (operation logs, records, one-time git logins) are readable only by you.
 - **History.** Each wizard run and dashboard action writes `logs/operations/<id>.json` with its
   status, step, exit code and log file. On every view the dashboard checks the recorded process
   against `/proc`, so a run whose process vanished shows **Interrupted** instead of "running"
-  forever. Terminal runs and wizards from older copies of the platform scripts don't write a
-  record; their `logs/*.log` files are listed as "Earlier runs".
+  forever. Terminal runs don't write a record; their `logs/*.log` files are listed as "Earlier
+  runs".
 - **Logs** are always redacted before they reach the page:
   - the environment's own secrets: env-file passwords and keys, the `env.php` crypt key and DB
     password, every `auth.json` credential;
@@ -850,8 +755,8 @@ browser ──> dashboard.py   (127.0.0.1 only; status + JSON API)
 ### Adding an action
 
 1. Add an entry to `ACTIONS` in `bin/lib/web-wizard/ops.py`:
-   - `label` and `argv`: a fixed command, relative to the checkout, using its wrappers;
-   - `mutating: True` if it changes anything, so it takes the checkout lock;
+   - `label` and `argv`: a fixed command, relative to this repo, using its wrappers;
+   - `mutating: True` if it changes anything, so it takes the instance lock;
    - `confirm` for anything disruptive;
    - `cancellable` only if it runs on the host;
    - `arg` if it takes a whitelisted parameter (see `service`/`mode` in `run_action`).
@@ -890,7 +795,7 @@ token cookie is a local convenience, not a substitute for any of these.
 python3 -m unittest discover -s tests -t tests
 ```
 Standard library only. The suite runs the real wizard server (`server.py`) and the dashboard
-against fake checkouts and a fake `docker`, covering:
+against fake instances and a fake `docker`, covering:
 - auth, Host and CSRF checks;
 - unknown ids, path traversal and injection attempts;
 - environment scrubbing and lock handling;
@@ -1000,9 +905,6 @@ per machine:
   lowercase letters, digits, `_` and `-`, at most 40); `mrn new` and setup refuse a name or
   `APP_DOMAIN` another stack already uses.
 
-Stacks created before this (fixed `af-network` on `172.28.0.0/16`) are migrated automatically on
-their next `mrn platform up`: containers are recreated on `up-network`, data volumes are kept.
-
 If you ever run so many stacks that Docker runs out of networks ("could not find an available,
 non-overlapping IPv4 address pool"), widen its pools in Docker Desktop → Settings → Docker Engine:
 `"default-address-pools": [{"base": "10.200.0.0/16", "size": 24}]`.
@@ -1011,10 +913,9 @@ non-overlapping IPv4 address pool"), widen its pools in Docker Desktop → Setti
 
 | File | Committed? | Used by |
 |---|---|---|
-| `env/.env.local.example` (this repo) | Yes (placeholders for secrets) | The template `mrn new` copies into each instance |
-| `<instance>/.env` | Never (outside any repo; 0600) | Every `mrn` command for that instance — required; they refuse to run without it |
+| `env/.env.local.example` (this repo) | Yes (no real values) | The template `mrn new` copies into each instance |
+| `<instance>/.env` | Never (outside any repo; 0600) | Every `mrn` command for that instance — required; they refuse to run without it. `PROD_*` are written by the DB refresh (read from the dump) |
 | `<instance>/.platform-instance` | Never | Marks the folder as an instance and names the platform repo that runs it |
-| `env/.env.local` (older layout) | **No** (gitignored) | That checkout's `bin/` scripts |
 
 The env file is read with `env_get` and written with `set_env_var` (`bin/lib/env.sh`) — one
 `KEY=value` per line, values copied literally. Hand edits are fine; keep to that format.

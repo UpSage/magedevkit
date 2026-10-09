@@ -113,6 +113,11 @@ ASKPASS
                 GIT_ASKPASS="$ASKPASS_SCRIPT" GIT_CLONE_USERNAME="$GH_USER" GIT_CLONE_TOKEN="$GH_TOKEN" GIT_TERMINAL_PROMPT=0 \
                     git clone --branch "$GIT_BRANCH" "$GITHUB_URL" "$MAGENTO_DIR" || CLONE_STATUS=$?
                 rm -f "$ASKPASS_SCRIPT"
+                # Commit name/email for this repo, from the GitHub account the token
+                # belongs to — so it isn't asked for separately.
+                if [ "$CLONE_STATUS" -eq 0 ] && [ "$CRED_HOST" = github.com ]; then
+                    IFS=$'\t' read -r GH_ID_NAME GH_ID_EMAIL < <(github_identity "$GH_TOKEN") || true
+                fi
                 if [ "$CLONE_STATUS" -eq 0 ] && [ "$REMEMBER_LOGIN" = 1 ]; then
                     repo_remember_login "$MAGENTO_DIR" "$CRED_HOST" "$GH_USER" "$GH_TOKEN" \
                         || fail "The clone worked, but the login couldn't be saved for magento/."
@@ -172,6 +177,7 @@ ASKPASS
     fi
 fi
 
-# magento/'s own commit identity — asked once, saved in this repo only (a
-# fresh download isn't a git repo, so it's skipped there).
-repo_ensure_identity "$MAGENTO_DIR"
+# magento/'s own commit identity, saved in this repo only: taken from the
+# GitHub account used for the clone when there was one, otherwise asked once
+# (a fresh download isn't a git repo, so it's skipped there).
+repo_ensure_identity "$MAGENTO_DIR" "${GH_ID_NAME:-}" "${GH_ID_EMAIL:-}"

@@ -1,6 +1,7 @@
 """Small bash helpers that guard user input on its way into files, sed and
 the filesystem: bin/lib/env.sh and bin/lib/db-backup.sh."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -158,6 +159,42 @@ class PerRepoGit(unittest.TestCase):
         self.assertNotEqual(self.fill("personal").returncode, 0)  # the other repo never sees it
         self.assertFalse(os.path.exists(os.path.join(self.home, ".gitconfig")))
         self.assertFalse(os.path.exists(os.path.join(self.home, ".git-credentials")))
+
+    def github(self, emails_ok, name="Up Sage"):
+        """github_identity against a fake curl (no network) that records its
+        argv, so the test can check the token never reaches a command line."""
+        fake = os.path.join(self.d, "fakebin")
+        os.makedirs(fake, exist_ok=True)
+        user = json.dumps({"login": "UpSage", "id": 4242, "name": name, "email": None})
+        emails = json.dumps([{"email": "old@x.com", "primary": False, "verified": True},
+                             {"email": "me@personal.com", "primary": True, "verified": True}])
+        helpers.write(os.path.join(fake, "curl"), """#!/bin/bash
+echo "$*" >> "%(d)s/curl-args"
+cat > "%(d)s/curl-stdin"
+case "$*" in
+  *user/emails*) %(emails)s ;;
+  *api.github.com/user*) echo '%(user)s' ;;
+esac
+""" % {"d": self.d, "user": user, "emails": ("echo '%s'" % emails) if emails_ok else "exit 22"}, 0o755)
+        env = dict(os.environ, HOME=self.home, PATH=fake + os.pathsep + os.environ["PATH"])
+        p = subprocess.run(["bash", "-c", 'source "%s/ui.sh"; source "%s/git-repo.sh"; github_identity ghp_SECRET123' % (LIB, LIB)],
+                           capture_output=True, text=True, env=env)
+        self.assertNotIn("ghp_SECRET123", helpers.read(os.path.join(self.d, "curl-args")))
+        self.assertIn("ghp_SECRET123", helpers.read(os.path.join(self.d, "curl-stdin")))  # header via stdin
+        return p.stdout
+
+    def test_identity_from_the_github_account(self):
+        self.assertEqual(self.github(emails_ok=True), "Up Sage\tme@personal.com\n")
+        # The token may not read emails: the account's noreply address still credits it.
+        self.assertEqual(self.github(emails_ok=False, name=None), "UpSage\t4242+UpSage@users.noreply.github.com\n")
+
+    def test_given_identity_is_used_without_asking(self):
+        p = self.sh('repo_ensure_identity "$PWD/personal" "Up Sage" me@personal.com </dev/null')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("Up Sage <me@personal.com>", p.stdout)
+        git_email = subprocess.run(["git", "-C", os.path.join(self.d, "personal"), "config", "--local", "user.email"],
+                                   capture_output=True, text=True).stdout.strip()
+        self.assertEqual(git_email, "me@personal.com")
 
     def test_identity_validation(self):
         for ok in ("dev@company.com", "a.b+c@x.co"):

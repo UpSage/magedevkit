@@ -7,11 +7,10 @@
 # TARGET_BASE_URL, TABLES_TO_STRIP (array, may be empty), and either
 # LOCAL_SOURCE_FILE or DB_URL (the required source). APPLY_URL_REWRITE,
 # EFFECTIVE_MEDIA_URL, and COOKIE_DOMAIN are optional — sane defaults are
-# applied below. PROD_BASE_URL/PROD_MEDIA_URL/PROD_COOKIE_DOMAIN come from
-# the env file (bin/local/setup asks for them once) — this is a generic
-# tool with no project's real facts baked in, so those three are required
-# only when APPLY_URL_REWRITE actually needs them, checked lazily right
-# before use rather than unconditionally up front.
+# applied below. The production URLs and cookie domain to rewrite *from*
+# are read from the dump itself (bin/lib/prod-urls.sh); the saved
+# PROD_BASE_URL/PROD_MEDIA_URL/PROD_COOKIE_DOMAIN are only the fallback for
+# a dump that doesn't carry them.
 
 LOCAL_DIR="$DB_DIR/db-refresh"
 LOCAL_FILE="$LOCAL_DIR/dbbackup.sql.gz"
@@ -24,6 +23,9 @@ source "$PLATFORM_DIR/bin/lib/db-backup.sh"
 # sed_re_literal / sed_repl_literal
 # shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/env.sh"
+# detect_prod_urls / prod_urls_are_local — the dump's own store URLs
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/prod-urls.sh"
 
 # Shared non-prod media CDN default — the rewrite target used whenever
 # nothing overrides it. With no project-specific CDN configured, deriving
@@ -94,6 +96,18 @@ gunzip -t "$LOCAL_FILE" || fail "The downloaded file is not a valid .gz file."
 log "Verified: .gz file is valid."
 ui_task_done
 
+# Which site the dump came from: read from the dump itself (its
+# core_config_data), not typed in — see bin/lib/prod-urls.sh.
+if [ "$APPLY_URL_REWRITE" = 1 ]; then
+  ui_task_start "Reading the dump's store URLs"
+  detect_prod_urls "$LOCAL_FILE"
+  if prod_urls_are_local; then
+    log "✓ The dump already uses this site's domain ($APP_DOMAIN) — nothing to rewrite."
+    APPLY_URL_REWRITE=0
+  fi
+  ui_task_done
+fi
+
 STRIP_SED_SCRIPT=""
 for t in "${TABLES_TO_STRIP[@]}"; do
   STRIP_SED_SCRIPT+="/^INSERT INTO \`$t\` VALUES/,/;\$/d;"
@@ -107,9 +121,19 @@ done
 ui_task_start "Preparing the SQL (rewriting URLs, cleaning definers)"
 log "Extracting and processing SQL file ..."
 if [ "$APPLY_URL_REWRITE" = 1 ]; then
-  : "${PROD_BASE_URL:?PROD_BASE_URL is not set — add it to your env file (bin/local/setup asks for this once).}"
-  : "${PROD_MEDIA_URL:?PROD_MEDIA_URL is not set — add it to your env file (bin/local/setup asks for this once).}"
-  : "${PROD_COOKIE_DOMAIN:?PROD_COOKIE_DOMAIN is not set — add it to your env file (bin/local/setup asks for this once).}"
+  # Every production URL → this site's: media URLs first (a CDN, or a
+  # media/ path under the base URL), then the base URLs (unsecure, secure
+  # and link URLs can all differ), then the cookie domain if one is set.
+  REWRITE=()
+  for url in "${PROD_MEDIA_URLS[@]}"; do
+    REWRITE+=(-e "s|$(sed_re_literal "$url")|$(sed_repl_literal "$EFFECTIVE_MEDIA_URL")|g")
+  done
+  for url in "${PROD_BASE_URLS[@]}"; do
+    REWRITE+=(-e "s|$(sed_re_literal "$url")|$(sed_repl_literal "$TARGET_BASE_URL")|g")
+  done
+  if [ -n "${PROD_COOKIE_DOMAIN:-}" ]; then
+    REWRITE+=(-e "s|$(sed_re_literal "'web/cookie/cookie_domain','$PROD_COOKIE_DOMAIN'")|$(sed_repl_literal "'web/cookie/cookie_domain','${COOKIE_DOMAIN:-}'")|g")
+  fi
 
   # The cookie-domain rewrite blanks the production cookie domain by
   # default (COOKIE_DOMAIN empty in the env file) rather than rewriting
@@ -124,9 +148,7 @@ if [ "$APPLY_URL_REWRITE" = 1 ]; then
     | grep -v '\/\*M!999999\\-' \
     | sed -e 's/DEFINER=`[^`]*`@`[^`]*`//g' \
           -e 's/SQL SECURITY DEFINER//g' \
-          -e "s|$(sed_re_literal "$PROD_BASE_URL")|$(sed_repl_literal "$TARGET_BASE_URL")|g" \
-          -e "s|$(sed_re_literal "$PROD_MEDIA_URL")|$(sed_repl_literal "$EFFECTIVE_MEDIA_URL")|g" \
-          -e "s|$(sed_re_literal "'web/cookie/cookie_domain','$PROD_COOKIE_DOMAIN'")|$(sed_repl_literal "'web/cookie/cookie_domain','${COOKIE_DOMAIN:-}'")|g" \
+          "${REWRITE[@]}" \
     | sed "$STRIP_SED_SCRIPT" \
     > "$PROCESSED_FILE" || fail "Failed to extract and process $LOCAL_FILE."
 else
@@ -233,5 +255,5 @@ UPDATE core_config_data SET value='9200' WHERE path='catalog/search/opensearch_s
 ui_task_done
 log "DB refresh complete."
 log "Next suggested commands:"
-log "bin/magento setup:upgrade"
-log "bin/magento cache:flush"
+log "$(cmd_hint magento setup:upgrade)"
+log "$(cmd_hint magento cache:flush)"

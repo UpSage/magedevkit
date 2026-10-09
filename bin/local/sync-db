@@ -6,11 +6,11 @@ set -o pipefail
 # shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
 
-# Local's DB-refresh entry point. The config-resolution logic (prompts,
-# storage driver, production facts) lives in
-# bin/lib/sync-db-config-engine.sh — this file supplies the helpers above,
-# the DB credentials (from the env file), and the env file. Dispatched to from
-# bin/sync-db.
+# The DB import's entry point (mrn sync-db). The questions (dump source,
+# local URLs, storage driver) live in bin/lib/sync-db-config-engine.sh, the
+# import itself in bin/lib/db-refresh-engine.sh (which reads the production
+# URLs from the dump: bin/lib/prod-urls.sh). This file supplies the lock and
+# the DB credentials from the env file.
 
 require_env_file
 # Never two DB replacements (or a DB replacement and a setup/refresh) at

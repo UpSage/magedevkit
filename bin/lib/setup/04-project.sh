@@ -1,4 +1,4 @@
-# Setup wizard, part 4 of 11 — Step 4: project name, domain, admin path, URLs; production facts for imported dumps.
+# Setup wizard, part 4 of 11 — Step 4: project name, domain, admin path, URLs.
 # Sourced in order by bin/lib/setup-engine.sh (top-level script, shared
 # variables); never run on its own.
 
@@ -96,47 +96,7 @@ else
     log "✓ Project configuration already set (APP_NAME=$APP_NAME, APP_DOMAIN=$APP_DOMAIN)."
 fi
 
-# Production facts — needed so an imported production DB dump's URLs/cookie
-# domain get sanitized (rewritten to this environment's own) instead of
-# leaking production URLs. A separate one-time gate from Project
-# Configuration above (keyed on the vars themselves being unset, not on
-# config/nginx-local/default.conf existing) so this still reaches anyone
-# who ran this wizard before this project added these.
-if [ "$FRESH_SOURCE" = 1 ]; then
-    log "✓ Production facts not needed for a fresh vanilla install (only used to sanitize imported dumps)."
-elif [ -z "${PROD_BASE_URL:-}" ] || [ -z "${PROD_MEDIA_URL:-}" ] || [ -z "${PROD_COOKIE_DOMAIN:-}" ]; then
-    log "Production facts (needed so an imported DB dump's URLs get sanitized correctly) — asked once."
-    # Checked here, because a wrong value would make the DB refresh rewrite
-    # the wrong URLs (bin/lib/db-refresh-engine.sh matches them literally).
-    while true; do
-        PROD_BASE_URL_INPUT="$(prompt_value "$(with_default "What's the live site's URL? (e.g. https://example.com/)" "${PROD_BASE_URL:-}")" 0)"
-        PROD_BASE_URL_CANDIDATE="${PROD_BASE_URL_INPUT:-${PROD_BASE_URL:-}}"
-        PROD_BASE_URL_NORMALIZED="$(normalize_base_url "$PROD_BASE_URL_CANDIDATE")" && break
-        ui_interactive || fail "PROD_BASE_URL '$PROD_BASE_URL_CANDIDATE' isn't a URL like https://example.com/ — set it in $ENV_NAME."
-        log "'$PROD_BASE_URL_CANDIDATE' isn't a URL — use the full address, e.g. https://example.com/"
-    done
-    PROD_BASE_URL="$PROD_BASE_URL_NORMALIZED"
-    set_env_var "$ENV_FILE" PROD_BASE_URL "$PROD_BASE_URL"
-
-    while true; do
-        PROD_MEDIA_URL_INPUT="$(prompt_value "$(with_default "Where does the live site load media from? (its media/CDN URL)" "${PROD_MEDIA_URL:-}")" 0)"
-        PROD_MEDIA_URL_CANDIDATE="${PROD_MEDIA_URL_INPUT:-${PROD_MEDIA_URL:-}}"
-        PROD_MEDIA_URL_NORMALIZED="$(normalize_base_url "$PROD_MEDIA_URL_CANDIDATE")" && break
-        ui_interactive || fail "PROD_MEDIA_URL '$PROD_MEDIA_URL_CANDIDATE' isn't a URL like https://example.com/media/ — set it in $ENV_NAME."
-        log "'$PROD_MEDIA_URL_CANDIDATE' isn't a URL — e.g. https://example.com/media/ or https://cdn.example.com/media/"
-    done
-    PROD_MEDIA_URL="$PROD_MEDIA_URL_NORMALIZED"
-    set_env_var "$ENV_FILE" PROD_MEDIA_URL "$PROD_MEDIA_URL"
-
-    while true; do
-        PROD_COOKIE_DOMAIN_INPUT="$(prompt_value "$(with_default "What cookie domain does the live site use? (e.g. .example.com)" "${PROD_COOKIE_DOMAIN:-}")" 0)"
-        PROD_COOKIE_DOMAIN_CANDIDATE="${PROD_COOKIE_DOMAIN_INPUT:-${PROD_COOKIE_DOMAIN:-}}"
-        valid_cookie_domain "$PROD_COOKIE_DOMAIN_CANDIDATE" && break
-        ui_interactive || fail "PROD_COOKIE_DOMAIN '$PROD_COOKIE_DOMAIN_CANDIDATE' isn't a domain like .example.com — set it in $ENV_NAME."
-        log "'$PROD_COOKIE_DOMAIN_CANDIDATE' isn't a domain — e.g. .example.com or www.example.com"
-    done
-    PROD_COOKIE_DOMAIN="$PROD_COOKIE_DOMAIN_CANDIDATE"
-    set_env_var "$ENV_FILE" PROD_COOKIE_DOMAIN "$PROD_COOKIE_DOMAIN"
-else
-    log "✓ Production facts already set (PROD_BASE_URL=$PROD_BASE_URL)."
-fi
+# The live site's URLs and cookie domain (what an imported production dump
+# is rewritten *from*) aren't asked here any more: the DB refresh reads them
+# from the dump itself (bin/lib/prod-urls.sh), and asks only if the dump
+# doesn't carry them.
