@@ -1,7 +1,6 @@
 #!/bin/bash
 
-set -e
-set -o pipefail
+set -euo pipefail
 
 # PLATFORM_DIR, MAGENTO and the shared helpers (ui.sh, env.sh, paths.sh).
 # shellcheck disable=SC1091

@@ -10,6 +10,10 @@ magento_source_valid() {  # $1=dir -> 0 if it looks like a real Magento tree
     [ -f "$1/composer.json" ] && [ -d "$1/app" ] && [ -f "$1/bin/magento" ] && [ -d "$1/pub" ]
 }
 
+# repo_remember_login / repo_ensure_identity — per-repo git identity and login.
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/git-repo.sh"
+
 # Prompt helpers (prompt_value/menu/yes_no/db_ident/db_secret/matching/
 # admin_password, with_default) live in bin/lib/ui.sh — shared with the
 # web wizard.
@@ -80,20 +84,21 @@ else
         log "Cloning Magento source ..."
         case "$GITHUB_URL" in
           https://*)
-            # A login git already has saved (credential helper) is used as is;
-            # otherwise ask for one, use it for this clone only — and save it
-            # (git credential store, ~/.git-credentials, 0600) if wanted.
+            # A login git already has (e.g. a system credential manager) is
+            # used as is; otherwise ask for one, use it for this clone only —
+            # and save it for this repo only (magento/.git/credentials, 0600,
+            # bin/lib/git-repo.sh) if wanted. Never into the global git config.
             CRED_HOST="$(printf '%s' "$GITHUB_URL" | sed -E 's#^https://([^/@]+@)?([^/]+)/.*#\2#')"
             if printf 'protocol=https\nhost=%s\n\n' "$CRED_HOST" \
                 | GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false timeout 5 git credential fill >/dev/null 2>&1; then
                 log "Using your saved login for $CRED_HOST"
                 GIT_TERMINAL_PROMPT=0 git clone --branch "$GIT_BRANCH" "$GITHUB_URL" "$MAGENTO_DIR" \
-                    || fail "git clone failed — check the repository URL and branch '$GIT_BRANCH'. If your saved token expired, forget it (dashboard → Git → Forget, or: printf 'protocol=https\\nhost=$CRED_HOST\\n\\n' | git credential reject) and run setup again."
+                    || fail "git clone failed — check the repository URL and branch '$GIT_BRANCH'. If your saved token expired, remove it from your credential manager (printf 'protocol=https\\nhost=$CRED_HOST\\n\\n' | git credential reject) and run setup again."
             else
                 GH_USER="$(prompt_value "What's your GitHub username?" 0)"
                 GH_TOKEN="$(prompt_value "What's your GitHub personal access token? (typing is hidden)" 1)"
                 REMEMBER_LOGIN=0
-                prompt_yes_no "Remember these credentials for later (saved in ~/.git-credentials, readable only by you)? The dashboard's Git tab and your terminal can then fetch and push without asking." N \
+                prompt_yes_no "Remember these credentials for this repo (saved in magento/.git/credentials, readable only by you; other repos never see them)? The dashboard's Git tab and your terminal can then fetch and push here without asking." N \
                     && REMEMBER_LOGIN=1
                 ASKPASS_SCRIPT="$(mktemp)"
                 chmod 700 "$ASKPASS_SCRIPT"
@@ -109,11 +114,9 @@ ASKPASS
                     git clone --branch "$GIT_BRANCH" "$GITHUB_URL" "$MAGENTO_DIR" || CLONE_STATUS=$?
                 rm -f "$ASKPASS_SCRIPT"
                 if [ "$CLONE_STATUS" -eq 0 ] && [ "$REMEMBER_LOGIN" = 1 ]; then
-                    [ -n "$(git config --global --get-all credential.helper 2>/dev/null)" ] \
-                        || git config --global credential.helper store
-                    printf 'protocol=https\nhost=%s\nusername=%s\npassword=%s\n\n' "$CRED_HOST" "$GH_USER" "$GH_TOKEN" \
-                        | git -c credential.helper=store credential approve
-                    log "✓ GitHub login saved for $CRED_HOST (~/.git-credentials)"
+                    repo_remember_login "$MAGENTO_DIR" "$CRED_HOST" "$GH_USER" "$GH_TOKEN" \
+                        || fail "The clone worked, but the login couldn't be saved for magento/."
+                    log "✓ GitHub login saved for this repo only (magento/.git/credentials)"
                 fi
                 unset GH_TOKEN GIT_CLONE_TOKEN
                 [ "$CLONE_STATUS" -eq 0 ] || fail "git clone failed — check the repository URL, branch '$GIT_BRANCH', and credentials."
@@ -168,3 +171,7 @@ ASKPASS
         log "Magento source is ready."
     fi
 fi
+
+# magento/'s own commit identity — asked once, saved in this repo only (a
+# fresh download isn't a git repo, so it's skipped there).
+repo_ensure_identity "$MAGENTO_DIR"

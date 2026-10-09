@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -o pipefail
+set -euo pipefail
 
 # Docker Magento DB refresh — dispatches to bin/local/sync-db, which resolves
 # its config via bin/lib/sync-db-config-engine.sh. The actual

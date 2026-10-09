@@ -3,7 +3,7 @@
 # instance) as a symlink in ~/.local/bin pointing at this repo's bin/mrn.
 # Also removes the links of its retired names (mr, mb, m2w) when they point
 # at a MageRunner checkout. Safe to re-run; re-run it if you move this repo.
-set -e
+set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"

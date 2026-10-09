@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>kit.js tests</title>
+</head>
+<body>
+  <!-- Run by tests/test_js.py in a headless browser; the result lands in #result. -->
+  <div id="toasts"></div>
+  <pre id="result">running</pre>
+  <script src="../../bin/lib/web-wizard/ui/kit.js"></script>
+  <script>
+'use strict';
+const results = [];
+function check(name, ok, detail) { results.push((ok ? 'PASS ' : 'FAIL ') + name + (ok || detail === undefined ? '' : ' — ' + detail)); }
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+// Clicks the button labelled `label` in the open dialog.
+function clickDialog(label) {
+  const btn = [...document.querySelectorAll('dialog[open] button')].find((b) => b.textContent.trim() === label);
+  if (!btn) throw new Error('no dialog button ' + label);
+  btn.click();
+}
+
+async function run() {
+  // h(): string on* handlers are never turned into inline handlers.
+  const el = h('button', { onclick: 'window.pwned = 1', text: 'x' });
+  check('h ignores string on* props', !el.hasAttribute('onclick'));
+  let clicked = 0;
+  h('button', { onClick: () => { clicked += 1; } }).click();
+  check('h wires function handlers', clicked === 1, clicked);
+  check('h drops javascript: href', !h('a', { href: 'javascript:alert(1)' }).hasAttribute('href'));
+  check('h drops data: src', !h('img', { src: 'data:text/html,x' }).hasAttribute('src'));
+  check('h keeps https href', h('a', { href: 'https://example.com/' }).getAttribute('href') === 'https://example.com/');
+  check('h sets text safely', h('p', { text: '<b>x</b>' }).innerHTML === '&lt;b&gt;x&lt;/b&gt;');
+
+  // cn / formatting
+  check('cn skips falsy', cn('a', null, false, 'b', '') === 'a b');
+  check('fmtDuration', fmtDuration(9) === '9s' && fmtDuration(75) === '1m 15s', fmtDuration(75));
+  check('fmtBytes', fmtBytes(0) === '0 B' && fmtBytes(1536) === '1.5 KB' && fmtBytes(null) === null, fmtBytes(1536));
+
+  // Button sizes are props, not class overrides.
+  const icon = Button({ size: 'icon-xs', iconName: 'x', title: 'Close' });
+  check('Button icon-xs size', icon.className.includes('size-7') && !icon.className.includes('size-9'), icon.className);
+  check('Button icon aria-label', icon.getAttribute('aria-label') === 'Close');
+  const card = Card({ gap: 'sm', pad: 'sm' });
+  check('Card dense', card.className.includes('gap-4') && card.className.includes('py-4') && !card.className.includes('gap-6'), card.className);
+
+  // setLogText keeps a reader who scrolled up where they are.
+  const pre = h('pre', { style: 'height:40px;overflow:auto' });
+  document.body.append(pre);
+  setLogText(pre, Array(50).fill('line').join('\n'), true);
+  check('setLogText sticks to bottom', pre.scrollTop > 0);
+  pre.scrollTop = 0;
+  setLogText(pre, Array(60).fill('line').join('\n'));
+  check('setLogText leaves a scrolled-up reader', pre.scrollTop === 0, pre.scrollTop);
+  pre.remove();
+
+  // navigateTab only follows http(s).
+  const fakeTab = { closed: false, location: { href: '' }, close() { this.closed = true; } };
+  check('navigateTab refuses javascript:', navigateTab(fakeTab, 'javascript:alert(1)') === false && fakeTab.closed);
+  const tab2 = { closed: false, location: { href: '' }, close() { this.closed = true; } };
+  check('navigateTab follows http', navigateTab(tab2, 'http://127.0.0.1:1/?token=x') && tab2.location.href.startsWith('http://'));
+  check('navigateTab without a tab', navigateTab(null, 'http://x/') === false);
+
+  // api()/getJSON() never throw: a dead server is { ok:false, status:0 }.
+  const res = await api('http://127.0.0.1:1/nothing', {});
+  check('api network error', res.ok === false && res.status === 0 && !!res.data.error, JSON.stringify(res));
+  const res2 = await getJSON('http://127.0.0.1:1/nothing');
+  check('getJSON network error', res2.ok === false && res2.status === 0);
+
+  // confirmDialog → true only for the confirm button.
+  let p = confirmDialog({ title: 'Sure?', text: 'x', confirm: 'Yes' });
+  await tick(); clickDialog('Yes');
+  check('confirmDialog yes', (await p) === true);
+  p = confirmDialog({ title: 'Sure?', text: 'x', confirm: 'Yes' });
+  await tick(); clickDialog('Cancel');
+  check('confirmDialog cancel', (await p) === false);
+
+  // formDialog stays open until validate passes; cancel always closes.
+  let tries = 0;
+  p = formDialog({ title: 'F', description: [], actions: [{ label: 'Cancel', value: false }, { label: 'Save', value: 'save' }],
+    validate: () => { tries += 1; return tries >= 2; } });
+  await tick(); clickDialog('Save');      // rejected by validate → shown again
+  await tick(); clickDialog('Save');      // accepted
+  check('formDialog revalidates', (await p) === 'save' && tries === 2, tries);
+  p = formDialog({ title: 'F', description: [], actions: [{ label: 'Cancel', value: false }], validate: () => false });
+  await tick(); clickDialog('Cancel');
+  check('formDialog cancel skips validate', (await p) === false);
+  check('no dialog left open', !document.querySelector('dialog[open]'));
+
+  // userBusy: typing or an open dialog.
+  const input = h('input'); document.body.append(input); input.focus();
+  check('userBusy while typing', userBusy() === true);
+  input.blur(); input.remove();
+  check('userBusy idle', userBusy() === false);
+}
+
+run().catch((e) => check('run', false, String(e && e.stack || e))).finally(() => {
+  const failed = results.filter((r) => r.startsWith('FAIL')).length;
+  document.getElementById('result').textContent = 'DONE ' + (failed ? 'FAILED ' + failed : 'OK') + ' ' + results.length + '\n' + results.join('\n');
+});
+  </script>
+</body>
+</html>

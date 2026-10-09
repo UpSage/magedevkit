@@ -28,10 +28,7 @@ class MagentoBuild(unittest.TestCase):
     def setUp(self):
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="mbuild-"))
         self.repo = os.path.join(self.tmp, "repo")
-        for rel in ("bin/local/magento-build", "bin/lib/bootstrap.sh", "bin/lib/util.sh", "bin/lib/ui.sh", "bin/lib/env.sh", "bin/lib/paths.sh"):
-            dst = os.path.join(self.repo, rel)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(os.path.join(helpers.REPO, rel), dst)
+        helpers.copy_scripts(self.repo, "bin/local/magento-build")
         helpers.write(os.path.join(self.repo, "bin", "magento"), RECORD % "magento", 0o755)
         helpers.write(os.path.join(self.repo, "bin", "composer"), RECORD % "composer", 0o755)
         helpers.write(os.path.join(self.repo, "bin", "platform"), PLATFORM, 0o755)

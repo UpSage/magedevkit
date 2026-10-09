@@ -227,25 +227,40 @@ class GitApi(unittest.TestCase):
         self.assertEqual(git(self.m, "rev-parse", "HEAD"), head)
 
     def test_remember_and_forget_login(self):
-        creds = os.path.join(self.home, ".git-credentials")
+        creds = os.path.join(self.m, ".git", "credentials")
         self.assertFalse(self.status()["savedLogin"])
         rec = self.run_op("fetch", {"username": "someone", "token": "ghp_remember0123456789", "remember": True})
         self.assertEqual(rec["status"], "done", rec)
-        with open(os.path.join(self.inst, rec["logFile"])) as f:
-            self.assertIn("-c credential.helper=store", f.readline())
-        # Only this repo is told to use the store; the global config isn't touched.
-        self.assertEqual(git(self.m, "config", "--local", "--get", "credential.helper"), "store")
+        # This repo only: its own helper and file (0600); nothing global.
+        self.assertEqual(git(self.m, "config", "--local", "--get", "credential.helper"), "store --file=%s" % creds)
+        self.assertEqual(os.stat(creds).st_mode & 0o777, 0o600)
         self.assertFalse(os.path.exists(os.path.join(self.home, ".gitconfig")))
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".git-credentials")))
         # A file:// origin never authenticates, so git saved nothing; a saved
         # GitHub login looks like this:
         write(creds, "https://someone:ghp_saved0123456789@github.com\n")
-        os.chmod(creds, 0o600)
         self.assertTrue(self.status()["savedLogin"])
         code, res, _ = self.post("forget_login")
         self.assertEqual(code, 200, res)
         self.assertFalse(self.status()["savedLogin"])
-        with open(creds) as f:
-            self.assertNotIn("github.com", f.read())
+        self.assertFalse(os.path.exists(creds))  # emptied, so removed
+        self.assertEqual(subprocess.run(["git", "-C", self.m, "config", "--local", "--get", "credential.helper"],
+                                        capture_output=True).returncode, 1)
+
+    def test_set_identity_is_per_repo(self):
+        before = (git(self.m, "config", "--local", "user.name"), git(self.m, "config", "--local", "user.email"))
+        try:
+            for bad in ({"name": "", "email": "a@b.co"}, {"name": "X", "email": "nope"}, {"name": "A<b>", "email": "a@b.co"},
+                        {"name": "A\nB", "email": "a@b.co"}, {"name": "A", "email": "a b@c.co"}, {}):
+                self.assertEqual(self.post("set_identity", bad)[0], 400, bad)
+            code, res, _ = self.post("set_identity", {"name": " Company Dev ", "email": "dev@company.test"})
+            self.assertEqual(code, 200, res)
+            self.assertEqual(self.status()["identity"], {"name": "Company Dev", "email": "dev@company.test"})
+            self.assertEqual(git(self.m, "config", "--local", "user.email"), "dev@company.test")
+            self.assertFalse(os.path.exists(os.path.join(self.home, ".gitconfig")))
+        finally:
+            git(self.m, "config", "user.name", before[0])
+            git(self.m, "config", "user.email", before[1])
 
     def test_login_never_written_when_locked(self):
         fd = os.open(os.path.join(self.inst, ".wizard.lock"), os.O_RDWR | os.O_CREAT)

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 # Full local refresh pipeline: sync the DB, reinstall
 # dependencies, and reapply every config setting that a fresh production DB

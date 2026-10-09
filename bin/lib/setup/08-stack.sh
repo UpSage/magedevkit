@@ -24,9 +24,19 @@ fi
 # ------------------------------------------------------------------
 
 ui_task "Building images" "$PLATFORM_DIR/bin/platform" build
-ui_task "Starting the stack" "$PLATFORM_DIR/bin/platform" up -d
+# A brand-new data volume can make a service fail its very first start
+# (RabbitMQ's image, for one, sometimes can't read its .erlang.cookie on the
+# first boot; the restart policy brings it up seconds later). `up -d` then
+# reports "dependency failed to start" — so give it one more try before
+# calling it a failure.
+if ! ui_task "Starting the stack" "$PLATFORM_DIR/bin/platform" up -d; then
+    log "Starting the stack didn't finish — a service may still be on its first start. Trying once more in 20 s ..."
+    sleep 20
+    ui_task "Starting the stack (second try)" "$PLATFORM_DIR/bin/platform" up -d \
+        || fail "The stack didn't start — see the output above, and: $(cmd_hint platform logs)."
+fi
 ui_task "Waiting for services to report healthy" wait_for_healthy 180 \
-    || fail "Services still unhealthy after 180s — see the status above and check 'bin/platform logs <service>'."
+    || fail "Services still unhealthy after 180s — see the status above and check: $(cmd_hint platform logs) <service>"
 "$PLATFORM_DIR/bin/platform" ps
 
 # ------------------------------------------------------------------

@@ -47,6 +47,18 @@ def write(path, text, mode=0o644):
     os.chmod(path, mode)
 
 
+def copy_scripts(repo, *rels):
+    """Copies the real bin/lib/ (the shared helpers every script sources) plus
+    the given files into a throwaway repo — so a new helper file never needs
+    adding to a test's file list."""
+    shutil.copytree(os.path.join(REPO, "bin", "lib"), os.path.join(repo, "bin", "lib"), dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    for rel in rels:
+        dst = os.path.join(repo, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(os.path.join(REPO, rel), dst)
+
+
 def make_checkout(root, project, app_name, domain, extra_env="", with_launch=True):
     """<root>/<project>/platform (+ magento/) laid out like a real checkout."""
     pd = os.path.join(root, project, "platform")

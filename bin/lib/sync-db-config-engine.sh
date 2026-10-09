@@ -153,6 +153,29 @@ TARGET_BASE_URL="https://${APP_DOMAIN}/"
 # duplicated here too.
 [ -n "${BASE_MEDIA_URL:-}" ] && EFFECTIVE_MEDIA_URL="$BASE_MEDIA_URL"
 
+# confirm_replace — returns only once replacing the database is confirmed.
+confirm_replace() {
+  local choice
+  if [ -n "${PRESET_REPLACE_CHOICE:-}" ]; then
+    case "$PRESET_REPLACE_CHOICE" in
+      y|Y|yes|Yes) log "Replacing the database: confirmed in advance (PRESET_REPLACE_CHOICE)."; return 0 ;;
+      *) cancel "Refresh cancelled (PRESET_REPLACE_CHOICE=$PRESET_REPLACE_CHOICE) — no changes made." ;;
+    esac
+  fi
+  if ui_web && [ "${UI_FLOW:-}" = refresh ]; then
+    ui_confirm_destructive "Replace the database '$MARIADB_DB' of project '${APP_NAME:-app}' with $(basename "${LOCAL_SOURCE_FILE:-$DB_URL}")?" "${APP_NAME:-app}" \
+      || cancel "Refresh cancelled — no changes made."
+    return 0
+  fi
+  ui_interactive \
+    || fail "Not replacing the database without a confirmation — run this in a terminal or the refresh wizard ($(cmd_hint refresh-wizard)), or set PRESET_REPLACE_CHOICE=Y to confirm in advance."
+  choice="$(prompt 'Continue?' 'Y')"
+  case "$choice" in
+    y|Y|yes|Yes) : ;;
+    *) cancel "Refresh cancelled — no changes made." ;;
+  esac
+}
+
 ui_step refresh 4
 
 # Blank by default (nothing stripped) — requires an explicit, deliberate
@@ -177,21 +200,14 @@ case "$BACKUP_CHOICE" in
   *) BACKUP_BEFORE_REPLACE=0 ;;
 esac
 
-# Destructive-replacement confirmation. Defaults to Y, so a non-interactive
-# invocation auto-confirms instead of hanging or failing. On the refresh
-# wizard page the project name has to be typed to enable the button.
+# Destructive-replacement confirmation. Someone has to say yes: on the
+# refresh wizard page by typing the project name, in a terminal or on the
+# setup page with a yes/no question. With nobody there (no terminal, no
+# page) it stops — unless the caller said yes in advance with
+# PRESET_REPLACE_CHOICE=Y. It never replaces a database on a default.
 ui_step refresh 5
 log "This will replace the current local Magento database ($MARIADB_DB)."
-if ui_web && [ "${UI_FLOW:-}" = refresh ]; then
-  ui_confirm_destructive "Replace the database '$MARIADB_DB' of project '${APP_NAME:-app}' with $(basename "${LOCAL_SOURCE_FILE:-$DB_URL}")?" "${APP_NAME:-app}" \
-    || fail "Refresh cancelled — no changes made."
-else
-  REPLACE_CHOICE="$(prompt 'Continue?' 'Y')"
-  case "$REPLACE_CHOICE" in
-    y|Y|yes|Yes) : ;;
-    *) fail "Refresh cancelled — no changes made." ;;
-  esac
-fi
+confirm_replace
 
 # shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/db-refresh-engine.sh"

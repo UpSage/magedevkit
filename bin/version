@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 # Switches the installed Magento version: upgrade to a newer version in the
 # m2/ catalog, or roll back (downgrade) to a snapshot saved automatically

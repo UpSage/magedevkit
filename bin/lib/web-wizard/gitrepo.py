@@ -1,8 +1,9 @@
 """The dashboard's Git tab: one environment's Magento repo (magento/).
 
 Reads (status, diff) run directly. Local writes (stage, unstage, commit,
-create_branch, switch, discard) run synchronously while holding the
-instance lock, so they never overlap a wizard or a dashboard action.
+create_branch, switch, discard, delete_branch, set_identity, forget_login)
+run synchronously while holding the instance lock, so they never overlap a
+wizard or a dashboard action.
 Network commands (fetch, pull, push) run as dashboard operations
 (ops.spawn_git), so their output shows in the watch panel and in Operations.
 
@@ -12,10 +13,14 @@ names must pass `git check-ref-format --branch`, and the commit message goes
 in on stdin. Nothing here force-pushes, rewrites history or merges: pull is
 fast-forward only.
 
-A GitHub login, when git has none saved, is handed to one network command
-only: ops.spawn_git writes it into a private temp dir that a GIT_ASKPASS
-script reads, and oprun deletes that dir when the command ends. It never
-reaches argv, a record or a log.
+Identity and logins are per repo, never global: the commit name/email are
+set in magento/.git/config (set_identity), and a login the user chose to
+remember lives in magento/.git/credentials (0600) through a repo-local
+`store --file=…` helper — the same layout bin/lib/git-repo.sh uses during
+setup. Otherwise a login is handed to one network command only:
+ops.spawn_git writes it into a private temp dir that a GIT_ASKPASS script
+reads, and oprun deletes that dir when the command ends. It never reaches
+argv, a record or a log.
 """
 
 import os
@@ -38,22 +43,44 @@ CRED_RE = re.compile(r"^https://[^@\s/]+@github\.com/?$")
 GITHUB_ERASE = "protocol=https\nhost=github.com\n\n"
 
 
+def creds_file(e):
+    """This repo's own saved login (bin/lib/git-repo.sh repo_credentials_file)."""
+    return os.path.join(e.magento_dir, ".git", "credentials")
+
+
+def _store_helper(e):
+    return "store --file=%s" % creds_file(e)
+
+
 def saved_login(e):
-    """Whether git in this repo uses the store helper and ~/.git-credentials
-    has a GitHub login (the line is only matched, never read out or sent)."""
-    if not any(h.split()[:1] == ["store"] for h in _helpers(e)):
+    """Whether this repo has a GitHub login saved for it: its local helper is
+    the per-repo store and that file has a github.com line (only matched,
+    never read out or sent anywhere)."""
+    if _store_helper(e) not in _helpers(e):
         return False
     try:
-        with open(os.path.join(os.path.expanduser("~"), ".git-credentials")) as f:
+        with open(creds_file(e)) as f:
             return any(CRED_RE.match(line.strip()) for line in f)
     except OSError:
         return False
 
 
 def _helpers(e):
-    """The credential.helper values git uses in this repo (global + local)."""
-    code, out, _ = _run(e, "config", "--get-all", "credential.helper", timeout=10)
+    """The credential.helper values set in this repo's own config."""
+    code, out, _ = _run(e, "config", "--local", "--get-all", "credential.helper", timeout=10)
     return [l.strip() for l in out.splitlines() if l.strip()] if code == 0 else []
+
+
+def remember_here(e):
+    """Points this repo (only) at its own credential file, created 0600, so
+    git saves the next accepted login there — never in the global config or
+    a file other repos read."""
+    path = creds_file(e)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.close(fd)
+    os.chmod(path, 0o600)
+    code, _, err = _run(e, "config", "--local", "--replace-all", "credential.helper", _store_helper(e), timeout=10)
+    _check(code, err, "git config credential.helper")
 
 
 def _run(e, *args, input_text=None, timeout=30):
@@ -300,8 +327,8 @@ def _commit(e, body):
     if len(msg) > MAX_MESSAGE:
         raise ops.OpError(400, "The commit message is too long (at most %d characters)." % MAX_MESSAGE)
     if not (_out(e, "config", "user.name") and _out(e, "config", "user.email")):
-        raise ops.OpError(400, "git doesn't know who you are yet.",
-                          'Run: git config --global user.name "Your Name" && git config --global user.email you@example.com')
+        raise ops.OpError(400, "This repo has no commit name and email yet.",
+                          "Set them on the Git tab (they're saved in this repo only).")
     _, files = _files(e)
     if not any(f["staged"] for f in files):
         raise ops.OpError(400, "Nothing is staged — stage the files to commit first.")
@@ -311,10 +338,35 @@ def _commit(e, body):
 
 
 def _forget_login(e, body):
-    """Removes the saved GitHub login from git's credential store."""
-    code, _, err = _run(e, "-c", "credential.helper=store", "credential", "reject", input_text=GITHUB_ERASE)
+    """Removes this repo's saved GitHub login (its own credential file)."""
+    code, _, err = _run(e, "credential", "reject", input_text=GITHUB_ERASE)
     _check(code, err, "git credential reject")
-    return {"message": "Forgot the saved GitHub login"}
+    path = creds_file(e)
+    try:
+        if os.path.getsize(path) == 0:
+            os.remove(path)
+            _run(e, "config", "--local", "--unset-all", "credential.helper", "^store --file=", timeout=10)
+    except OSError:
+        pass
+    return {"message": "Forgot the GitHub login saved for this repo"}
+
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _set_identity(e, body):
+    """This repo's own commit name and email (bin/lib/git-repo.sh rules)."""
+    name, email = body.get("name"), body.get("email")
+    name = name.strip() if isinstance(name, str) else ""
+    email = email.strip() if isinstance(email, str) else ""
+    if not name or len(name) > 100 or any(c in name for c in "<>\r\n"):
+        raise ops.OpError(400, "Enter a name (at most 100 characters, no < > or line breaks).")
+    if not EMAIL_RE.match(email) or len(email) > 254:
+        raise ops.OpError(400, "Enter a valid email address.")
+    for key, value in (("user.name", name), ("user.email", email)):
+        code, _, err = _run(e, "config", "--local", key, value, timeout=10)
+        _check(code, err, "git config " + key)
+    return {"message": "Commits in this repo will be made as %s <%s>" % (name, email)}
 
 
 def _create_branch(e, body):
@@ -414,7 +466,8 @@ def _discard(e, body):
 
 
 LOCAL = {"stage": _stage, "unstage": _unstage, "commit": _commit, "create_branch": _create_branch,
-         "switch": _switch, "discard": _discard, "forget_login": _forget_login, "delete_branch": _delete_branch}
+         "switch": _switch, "discard": _discard, "forget_login": _forget_login, "delete_branch": _delete_branch,
+         "set_identity": _set_identity}
 
 
 # ---------------------------------------------------------------------------
@@ -453,12 +506,8 @@ def network(e, command, body, all_envs):
     remember = bool((body or {}).get("remember")) and login is not None
     if remember:
         # git saves the login itself once GitHub accepts it (credential
-        # approve → the store helper), and later commands find it there.
-        args = ["-c", "credential.helper=store"] + args
-        if not _helpers(e):
-            # Only this repo learns where the login is — the user's global
-            # git config is never changed.
-            _run(e, "config", "--local", "credential.helper", "store", timeout=10)
+        # approve → this repo's own store), and later commands find it there.
+        remember_here(e)
     worktree = command == "pull" and e.production
     if worktree and e.two_owner:
         raise ops.OpError(409, "In production mode with two-owner file ownership a pull needs sudo — run it in the terminal.")

@@ -57,13 +57,13 @@ async function gitNetwork(env, command) {
   const login = Panel({ cls: 'space-y-3 text-left' },
     h('p', { class: 'text-muted-foreground text-xs', text: S.gitNeedsLogin
       ? 'GitHub asked for a login last time. Enter your username and a personal access token (repo scope).'
-      : g.savedLogin ? 'Using your saved GitHub login. Fill these in only to use a different one.'
+      : g.savedLogin ? 'Using the GitHub login saved for this repo. Fill these in only to use a different one.'
         : 'Only if git has no saved login for GitHub: a personal access token (repo scope).' }),
     h('div', { class: 'space-y-2' }, Label('GitHub username', 'git-user'), user),
     h('div', { class: 'space-y-2' }, Label('Personal access token', 'git-token'), token),
     h('div', { class: 'space-y-1' },
       h('div', { class: 'flex items-center gap-2' }, remember, Label('Remember my credentials', 'git-remember')),
-      h('p', { class: 'text-muted-foreground text-xs', text: 'Saved in ~/.git-credentials (readable only by you), and this repo’s git config is set to use it, so the dashboard and your terminal stop asking here. Your global git config isn’t changed. Unticked, they’re used for this one command and never saved.' })));
+      h('p', { class: 'text-muted-foreground text-xs', text: 'Saved for this repo only, in magento/.git/credentials (readable only by you), so the dashboard and your terminal stop asking here. Other repos never see it, and your global git config isn’t touched. Unticked, they’re used for this one command and never saved.' })));
   const go = await dialog({
     title: { fetch: 'Fetch from origin?', pull: 'Pull?', push: 'Push?' }[command],
     description: [h('p', { text: what }), login],
@@ -89,6 +89,8 @@ async function gitNetwork(env, command) {
 
 // Commit in a dialog: the staged files, the author, the message.
 async function gitCommitDialog(env) {
+  // No name/email for this repo yet: ask for them first (saved in this repo only).
+  if (!S.git.identity && !(await gitIdentityDialog(env))) return;
   const g = S.git;
   const staged = g.files.filter((f) => f.staged);
   if (!gitMessage) gitMessage = Textarea({ id: 'git-message', rows: '4', placeholder: 'What changed, and why' });
@@ -96,16 +98,12 @@ async function gitCommitDialog(env) {
   const action = await formDialog({
       title: `Commit ${staged.length} file(s) on ${g.branch || 'detached HEAD'}`,
       description: [h('div', { class: 'space-y-3 text-left' },
-        g.identity
-          ? h('p', { text: `As ${g.identity.name} <${g.identity.email}>.` })
-          : Alert({ variant: 'warning', iconName: 'alert', title: 'Set your git identity first' },
-            h('p', { text: 'Run this once in a terminal, then try again:' }),
-            CodeLine('git config --global user.name "Your Name" && git config --global user.email you@example.com')),
+        h('p', { text: `As ${g.identity.name} <${g.identity.email}>.` }),
         h('ul', { class: 'max-h-32 list-disc space-y-0.5 overflow-auto pl-5' }, staged.slice(0, 50).map((f) => h('li', {}, InlineCode(f.path)))),
         h('div', { class: 'space-y-2' }, Label('Commit message', 'git-message'), gitMessage))],
-      actions: [{ label: 'Cancel', value: null }]
-        .concat(g.identity ? [g.branch ? { label: 'Commit & push', value: 'push', variant: 'outline' } : null,
-          { label: 'Commit', value: 'commit', variant: 'default' }].filter(Boolean) : []),
+      actions: [{ label: 'Cancel', value: null },
+        g.branch ? { label: 'Commit & push', value: 'push', variant: 'outline' } : null,
+        { label: 'Commit', value: 'commit', variant: 'default' }].filter(Boolean),
       validate: () => {
         if (gitMessage.value.trim()) return true;
         gitMessage.setAttribute('aria-invalid', 'true');
@@ -119,10 +117,38 @@ async function gitCommitDialog(env) {
   }
 }
 
+// This repo's own commit name and email (git config --local) — every store's
+// repo has its own, so a company repo and a personal one never mix. Resolves
+// true once saved.
+async function gitIdentityDialog(env) {
+  const cur = S.git.identity || {};
+  const name = Input({ id: 'git-id-name', value: cur.name || '', placeholder: 'e.g. your GitHub username or full name', autocomplete: 'name' });
+  const email = Input({ id: 'git-id-email', type: 'email', value: cur.email || '', placeholder: 'the email this GitHub account uses', autocomplete: 'email' });
+  const nameHelp = FormHelp('Shown as the author of every commit made in this repo.');
+  const emailHelp = FormHelp('GitHub links commits to the account that has this email.');
+  const ok = await formDialog({
+    title: cur.name ? 'Commit identity for this repo' : 'Who commits in this repo?',
+    description: [h('div', { class: 'space-y-3 text-left' },
+      h('p', { text: 'Saved in magento/.git/config — this repo only. Other repos and your global git config aren’t touched.' }),
+      FormField('Name', 'git-id-name', name, nameHelp),
+      FormField('Email', 'git-id-email', email, emailHelp))],
+    actions: [{ label: 'Cancel', value: false }, { label: 'Save', value: true }],
+    validate: () => {
+      const n = name.value.trim();
+      const m = email.value.trim();
+      if (!n || n.length > 100 || /[<>\r\n]/.test(n)) { markInvalid(name, nameHelp, 'Enter a name (at most 100 characters, no < or >).'); return false; }
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m)) { markInvalid(email, emailHelp, 'Enter a valid email address.'); return false; }
+      return true;
+    },
+  });
+  if (!ok) return false;
+  return gitWrite(env, 'set_identity', { name: name.value.trim(), email: email.value.trim() }, 'Commit identity saved');
+}
+
 async function gitForgetLogin(env) {
   const ok = await confirmDialog({
-    title: 'Forget the saved GitHub login?',
-    text: 'Removes it from ~/.git-credentials. Fetch, pull and push will ask for a username and token again — here and in your terminal.',
+    title: 'Forget the GitHub login saved for this repo?',
+    text: 'Removes it from magento/.git/credentials. Fetch, pull and push here will ask for a username and token again — in the dashboard and in your terminal.',
     confirm: 'Forget it', variant: 'destructive',
   });
   if (ok) gitWrite(env, 'forget_login', {}, 'Saved login removed');
@@ -330,6 +356,9 @@ function GitTab(env) {
       g.upstream && g.behind ? Button({ variant: 'outline', size: 'sm', iconName: 'download', label: `Pull ${g.behind}`, disabled: busy, onClick: () => gitNetwork(env, 'pull') }) : null,
       g.branch && (g.ahead || !g.upstream) ? Button({ size: 'sm', iconName: 'upload', label: g.upstream ? `Push ${g.ahead}` : 'Publish branch', disabled: busy, onClick: () => gitNetwork(env, 'push') }) : null,
       S.gitNeedsLogin ? Badge('GitHub login needed', 'warning', 'alert') : null,
+      h('span', { class: 'text-muted-foreground flex items-center gap-1 text-xs' },
+        g.identity ? `Commits as ${g.identity.name} <${g.identity.email}>` : 'No commit name/email for this repo yet',
+        Button({ variant: 'link', size: 'sm', label: g.identity ? 'Change' : 'Set', disabled: busy, onClick: () => gitIdentityDialog(env) })),
       g.savedLogin ? h('span', { class: 'ml-auto flex items-center gap-2' }, Badge('Saved GitHub login', 'success', 'check'),
         Button({ variant: 'ghost', size: 'sm', label: 'Forget', disabled: busy, onClick: () => gitForgetLogin(env) })) : null));
 

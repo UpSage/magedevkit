@@ -65,6 +65,17 @@ class BashHelpers(unittest.TestCase):
         for bad in ("localhost", "x;rm.test", "a..b", "-a.b", "a.b|c", "a b.test", ""):
             self.assertNotEqual(bash("valid_hostname '%s'" % bad, self.d).returncode, 0, bad)
 
+    def test_live_site_url_and_cookie_domain(self):
+        self.assertEqual(bash("normalize_base_url https://example.com", self.d).stdout, "https://example.com/")
+        self.assertEqual(bash("normalize_base_url https://cdn.example.com/media/", self.d).stdout,
+                         "https://cdn.example.com/media/")
+        for bad in ("example.com", "ftp://x.com/", "'https://a b.com/'", "https://", "'https://x.com/|w'"):
+            self.assertNotEqual(bash("normalize_base_url %s" % bad, self.d).returncode, 0, bad)
+        for ok in (".example.com", "www.example.com"):
+            self.assertEqual(bash("valid_cookie_domain %s" % ok, self.d).returncode, 0, ok)
+        for bad in ("''", "localhost", "'.ex ample.com'"):
+            self.assertNotEqual(bash("valid_cookie_domain %s" % bad, self.d).returncode, 0, bad)
+
     def test_version_compare(self):
         for a, b, lt in (("2.4.7", "2.4.8", True), ("2.4.8", "2.4.7", False), ("2.4.8", "2.4.8", False),
                          ("2.4.8", "2.4.8-p1", True), ("10.6", "11.4", True)):
@@ -86,6 +97,85 @@ class BashHelpers(unittest.TestCase):
         p = bash('prune_backups "$PWD" app 2', self.d)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(sorted(os.listdir(self.d)), ["app-3.sql.gz", "app-4.sql.gz", "other-1.sql.gz"])
+
+
+class ConfirmReplace(unittest.TestCase):
+    """sync-db-config-engine.sh confirm_replace: never replaces a database on
+    a default when nobody can answer."""
+
+    def run_confirm(self, preset=None):
+        engine = os.path.join(LIB, "sync-db-config-engine.sh")
+        script = ('source "%s/ui.sh"; cmd_hint() { echo "mrn refresh-wizard"; }; '
+                  'eval "$(sed -n \'/^confirm_replace() {/,/^}/p\' "%s")"; '
+                  'MARIADB_DB=magento; confirm_replace && echo CONFIRMED') % (LIB, engine)
+        env = {k: v for k, v in os.environ.items() if k not in ("SETUP_UI", "PRESET_REPLACE_CHOICE")}
+        if preset is not None:
+            env["PRESET_REPLACE_CHOICE"] = preset
+        return subprocess.run(["bash", "-c", script], stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env)
+
+    def test_no_terminal_stops(self):
+        p = self.run_confirm()
+        self.assertEqual(p.returncode, 1)
+        self.assertNotIn("CONFIRMED", p.stdout)
+        self.assertIn("Not replacing the database without a confirmation", p.stderr)
+
+    def test_preset_yes_and_no(self):
+        self.assertIn("CONFIRMED", self.run_confirm("Y").stdout)
+        p = self.run_confirm("N")
+        self.assertEqual(p.returncode, 130)
+        self.assertNotIn("CONFIRMED", p.stdout)
+
+
+class PerRepoGit(unittest.TestCase):
+    """bin/lib/git-repo.sh: logins and identities stay in one repo."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="repo-git-")
+        self.home = os.path.join(self.d, "home")
+        os.makedirs(self.home)
+        for r in ("company", "personal"):
+            subprocess.run(["git", "init", "-q", os.path.join(self.d, r)], check=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def sh(self, script):
+        env = dict(os.environ, HOME=self.home, GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1")
+        return subprocess.run(["bash", "-c", 'source "%s/ui.sh"; source "%s/git-repo.sh"; %s' % (LIB, LIB, script)],
+                              cwd=self.d, capture_output=True, text=True, env=env)
+
+    def fill(self, repo):
+        env = dict(os.environ, HOME=self.home, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="/bin/false", GIT_CONFIG_NOSYSTEM="1")
+        return subprocess.run(["git", "-C", os.path.join(self.d, repo), "credential", "fill"],
+                              input="protocol=https\nhost=github.com\n\n", capture_output=True, text=True, env=env)
+
+    def test_login_saved_for_one_repo_only(self):
+        p = self.sh("repo_remember_login \"$PWD/company\" github.com work-user ghp_company0123456789")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        creds = os.path.join(self.d, "company", ".git", "credentials")
+        self.assertEqual(os.stat(creds).st_mode & 0o777, 0o600)
+        self.assertIn("password=ghp_company0123456789", self.fill("company").stdout)
+        self.assertNotEqual(self.fill("personal").returncode, 0)  # the other repo never sees it
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".gitconfig")))
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".git-credentials")))
+
+    def test_identity_validation(self):
+        for ok in ("dev@company.com", "a.b+c@x.co"):
+            self.assertEqual(self.sh("valid_git_email '%s'" % ok).returncode, 0, ok)
+        for bad in ("nope", "a b@c.co", "@x.co", "a@b"):
+            self.assertNotEqual(self.sh("valid_git_email '%s'" % bad).returncode, 0, bad)
+        self.assertEqual(self.sh("valid_git_name 'UpSage'").returncode, 0)
+        for bad in ("", "A <b>"):
+            self.assertNotEqual(self.sh("valid_git_name '%s'" % bad).returncode, 0, bad)
+
+    def test_existing_identity_is_kept_and_none_is_reported(self):
+        subprocess.run(["git", "-C", os.path.join(self.d, "company"), "config", "user.email", "dev@company.com"], check=True)
+        subprocess.run(["git", "-C", os.path.join(self.d, "company"), "config", "user.name", "Dev"], check=True)
+        p = self.sh('repo_ensure_identity "$PWD/company" </dev/null')
+        self.assertIn("Dev <dev@company.com>", p.stdout)
+        p = self.sh('repo_ensure_identity "$PWD/personal" </dev/null')  # no terminal: tells how, carries on
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("no commit identity of its own", p.stdout)
 
 
 class S3Storage(unittest.TestCase):

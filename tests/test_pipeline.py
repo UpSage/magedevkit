@@ -50,6 +50,9 @@ class PipelineWizard(unittest.TestCase):
         helpers.write(os.path.join(self.mdir, "buildspec.yml"), "version: 0.2\n")
         helpers.write(os.path.join(self.mdir, "scripts", "before_install.sh"), "#!/bin/sh\n", 0o755)
         subprocess.run(["git", "init", "-q", "-b", "development", self.mdir], check=True)
+        # The repo's own identity — like every store repo, never a global one.
+        git(self.mdir, "config", "user.name", "t")
+        git(self.mdir, "config", "user.email", "t@t")
         git(self.mdir, "remote", "add", "origin", "https://github.com/Acme/shop.git")
         git(self.mdir, "add", "-A")
         git(self.mdir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "store")

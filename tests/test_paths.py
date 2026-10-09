@@ -37,12 +37,7 @@ class Paths(unittest.TestCase):
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="paths-"))
         # A copy of the scripts new-instance and paths.sh need, plus probes.
         self.repo = os.path.join(self.tmp, "platform-repo")
-        for rel in ("bin/lib/paths.sh", "bin/lib/ui.sh", "bin/lib/env.sh", "bin/lib/util.sh", "bin/local/new-instance", "bin/mrn",
-                    "env/.env.local.example"):
-            src = os.path.join(helpers.REPO, rel)
-            dst = os.path.join(self.repo, rel)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
+        helpers.copy_scripts(self.repo, "bin/local/new-instance", "bin/mrn", "env/.env.local.example")
         helpers.write(os.path.join(self.repo, "bin", "probe"), PROBE % "..", 0o755)
         # mrn routes `magento` to bin/magento and `setup-wizard` to bin/local/setup-wizard
         helpers.write(os.path.join(self.repo, "bin", "magento"), PROBE % "..", 0o755)

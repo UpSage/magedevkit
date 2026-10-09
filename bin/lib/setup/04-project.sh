@@ -106,16 +106,36 @@ if [ "$FRESH_SOURCE" = 1 ]; then
     log "✓ Production facts not needed for a fresh vanilla install (only used to sanitize imported dumps)."
 elif [ -z "${PROD_BASE_URL:-}" ] || [ -z "${PROD_MEDIA_URL:-}" ] || [ -z "${PROD_COOKIE_DOMAIN:-}" ]; then
     log "Production facts (needed so an imported DB dump's URLs get sanitized correctly) — asked once."
-    PROD_BASE_URL_INPUT="$(prompt_value "$(with_default "What's the live site's URL? (e.g. https://example.com/)" "${PROD_BASE_URL:-}")" 0)"
-    PROD_BASE_URL="${PROD_BASE_URL_INPUT:-${PROD_BASE_URL:-}}"
+    # Checked here, because a wrong value would make the DB refresh rewrite
+    # the wrong URLs (bin/lib/db-refresh-engine.sh matches them literally).
+    while true; do
+        PROD_BASE_URL_INPUT="$(prompt_value "$(with_default "What's the live site's URL? (e.g. https://example.com/)" "${PROD_BASE_URL:-}")" 0)"
+        PROD_BASE_URL_CANDIDATE="${PROD_BASE_URL_INPUT:-${PROD_BASE_URL:-}}"
+        PROD_BASE_URL_NORMALIZED="$(normalize_base_url "$PROD_BASE_URL_CANDIDATE")" && break
+        ui_interactive || fail "PROD_BASE_URL '$PROD_BASE_URL_CANDIDATE' isn't a URL like https://example.com/ — set it in $ENV_NAME."
+        log "'$PROD_BASE_URL_CANDIDATE' isn't a URL — use the full address, e.g. https://example.com/"
+    done
+    PROD_BASE_URL="$PROD_BASE_URL_NORMALIZED"
     set_env_var "$ENV_FILE" PROD_BASE_URL "$PROD_BASE_URL"
 
-    PROD_MEDIA_URL_INPUT="$(prompt_value "$(with_default "Where does the live site load media from? (its media/CDN URL)" "${PROD_MEDIA_URL:-}")" 0)"
-    PROD_MEDIA_URL="${PROD_MEDIA_URL_INPUT:-${PROD_MEDIA_URL:-}}"
+    while true; do
+        PROD_MEDIA_URL_INPUT="$(prompt_value "$(with_default "Where does the live site load media from? (its media/CDN URL)" "${PROD_MEDIA_URL:-}")" 0)"
+        PROD_MEDIA_URL_CANDIDATE="${PROD_MEDIA_URL_INPUT:-${PROD_MEDIA_URL:-}}"
+        PROD_MEDIA_URL_NORMALIZED="$(normalize_base_url "$PROD_MEDIA_URL_CANDIDATE")" && break
+        ui_interactive || fail "PROD_MEDIA_URL '$PROD_MEDIA_URL_CANDIDATE' isn't a URL like https://example.com/media/ — set it in $ENV_NAME."
+        log "'$PROD_MEDIA_URL_CANDIDATE' isn't a URL — e.g. https://example.com/media/ or https://cdn.example.com/media/"
+    done
+    PROD_MEDIA_URL="$PROD_MEDIA_URL_NORMALIZED"
     set_env_var "$ENV_FILE" PROD_MEDIA_URL "$PROD_MEDIA_URL"
 
-    PROD_COOKIE_DOMAIN_INPUT="$(prompt_value "$(with_default "What cookie domain does the live site use? (e.g. .example.com)" "${PROD_COOKIE_DOMAIN:-}")" 0)"
-    PROD_COOKIE_DOMAIN="${PROD_COOKIE_DOMAIN_INPUT:-${PROD_COOKIE_DOMAIN:-}}"
+    while true; do
+        PROD_COOKIE_DOMAIN_INPUT="$(prompt_value "$(with_default "What cookie domain does the live site use? (e.g. .example.com)" "${PROD_COOKIE_DOMAIN:-}")" 0)"
+        PROD_COOKIE_DOMAIN_CANDIDATE="${PROD_COOKIE_DOMAIN_INPUT:-${PROD_COOKIE_DOMAIN:-}}"
+        valid_cookie_domain "$PROD_COOKIE_DOMAIN_CANDIDATE" && break
+        ui_interactive || fail "PROD_COOKIE_DOMAIN '$PROD_COOKIE_DOMAIN_CANDIDATE' isn't a domain like .example.com — set it in $ENV_NAME."
+        log "'$PROD_COOKIE_DOMAIN_CANDIDATE' isn't a domain — e.g. .example.com or www.example.com"
+    done
+    PROD_COOKIE_DOMAIN="$PROD_COOKIE_DOMAIN_CANDIDATE"
     set_env_var "$ENV_FILE" PROD_COOKIE_DOMAIN "$PROD_COOKIE_DOMAIN"
 else
     log "✓ Production facts already set (PROD_BASE_URL=$PROD_BASE_URL)."

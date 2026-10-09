@@ -25,7 +25,7 @@
 #
 # Install once with bin/local/install-mrn (a symlink in ~/.local/bin).
 
-set -e
+set -euo pipefail
 
 # The repo this command belongs to (follows the ~/.local/bin symlink).
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"

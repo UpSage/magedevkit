@@ -42,6 +42,19 @@ valid_hostname() {
     [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] && [ "${#1}" -le 253 ]
 }
 
+# A site's base URL: http(s)://host[:port][/path], the path made of URL-safe
+# characters only (no query string). Prints it with a trailing slash
+# (Magento's base URLs end in one); fails for anything else.
+normalize_base_url() {
+    [[ "$1" =~ ^https?://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?(/[A-Za-z0-9._~%+/-]*)?$ ]] || return 1
+    case "$1" in */) printf '%s' "$1" ;; *) printf '%s/' "$1" ;; esac
+}
+
+# A cookie domain: a hostname, optionally with a leading dot (.example.com).
+valid_cookie_domain() {
+    valid_hostname "${1#.}"
+}
+
 # Updates KEY=value in $1, in place, adding the line if it isn't already there.
 # The value is copied literally (awk via the environment — no sed script, so
 # `|`, `&`, `\` or `/` in it can't change what runs). Refuses multi-line
