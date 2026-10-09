@@ -1,0 +1,101 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Read-only: compares the m2/ catalog's stack pins with Adobe's own system
+# requirements data (the file the Experience League page is generated from),
+# and lists Adobe releases that have no catalog folder yet — so the catalog
+# can be updated by hand when Adobe publishes a new patch/release.
+#
+#   bin/m2/check-requirements            # every 2.4.8+ release
+#   bin/m2/check-requirements 2.4.9      # just one Magento version line
+
+ADOBE_URL="https://raw.githubusercontent.com/AdobeDocs/commerce-operations.en/main/_jekyll/_data/system-requirements.yml"
+PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+M2="$PLATFORM_DIR/m2"
+FILTER="${1:-}"
+
+YAML="$(mktemp)"
+trap 'rm -f "$YAML"' EXIT
+curl -fsSL "$ADOBE_URL" -o "$YAML" || { echo "Error: couldn't download $ADOBE_URL" >&2; exit 1; }
+
+# Adobe service name -> version.env key
+SERVICES=("PHP:PHP_VERSION" "MariaDB:MARIADB_VERSION" "OpenSearch:OPENSEARCH_VERSION" "Valkey:VALKEY_VERSION"
+          "RabbitMQ:RABBITMQ_VERSION" "Varnish:VARNISH_VERSION" "nginx:NGINX_VERSION" "Composer:COMPOSER_VERSION")
+
+# $1=Magento version (e.g. 2.4.8-p3) $2=Adobe service -> Adobe's value
+adobe_value() {
+    awk -v want="$1" -v svc="$2" '
+        /^[0-9]/ { v=$0; sub(/:$/, "", v); sub(/ \(.*\)$/, "", v); keep=(v == want); next }
+        keep && index($0, "  " svc ":") == 1 { sub("^  " svc ": *", ""); gsub("\047", ""); print; exit }
+    ' "$YAML"
+}
+
+# $1=Magento version -> catalog folder (base or base/pN), blank if none
+catalog_dir() {
+    local base="${1%%-*}" patch=""
+    [ "$1" != "$base" ] && patch="${1#*-}"
+    if [ -n "$patch" ]; then
+        [ -f "$M2/$base/$patch/version.env" ] && echo "$M2/$base/$patch"
+    else
+        [ -f "$M2/$base/version.env" ] && echo "$M2/$base"
+    fi
+    return 0
+}
+
+# $1=dir $2=KEY -> value, patch folder layered over its base
+catalog_value() {
+    local dir="$1" key="$2" f v
+    for f in "$dir/version.env" "$(dirname "$dir")/version.env"; do
+        [ -f "$f" ] || continue
+        [ "$f" = "$M2/version.env" ] && continue
+        v="$(grep -m1 "^$key=" "$f" | cut -d= -f2- || true)"
+        [ -n "$v" ] && { echo "$v"; return; }
+    done
+    return 0
+}
+
+# Catalog value satisfies Adobe's list ("8.4, 8.3", "2.9.3+", "2.19") when it
+# equals one entry or one is a dotted prefix of the other (2.19.6 ~ 2.19,
+# 2.9 ~ 2.9.3+).
+satisfies() {
+    local pin="$1" item
+    IFS=',' read -ra items <<< "$2"
+    for item in "${items[@]}"; do
+        item="${item// /}"; item="${item%+}"
+        [ "$pin" = "$item" ] || [[ "$pin" == "$item".* ]] || [[ "$item" == "$pin".* ]] && return 0
+    done
+    return 1
+}
+
+mapfile -t RELEASES < <(awk '/^2\.4\.(8|9|[1-9][0-9])/ { v=$0; sub(/:$/, "", v); sub(/ \(.*\)$/, "", v); print v }' "$YAML" | sort -V)
+
+echo "Adobe source: $ADOBE_URL"
+echo
+MISMATCH=0
+MISSING=()
+for rel in "${RELEASES[@]}"; do
+    [ -z "$FILTER" ] || [[ "$rel" == "$FILTER"* ]] || continue
+    dir="$(catalog_dir "$rel")"
+    if [ -z "$dir" ]; then
+        MISSING+=("$rel")
+        continue
+    fi
+    echo "== $rel  (${dir#"$PLATFORM_DIR/"})"
+    printf '  %-11s %-14s %-12s %s\n' "Service" "Adobe" "Catalog" ""
+    for pair in "${SERVICES[@]}"; do
+        svc="${pair%%:*}" key="${pair#*:}"
+        want="$(adobe_value "$rel" "$svc")"
+        have="$(catalog_value "$dir" "$key")"
+        [ -n "$want" ] || continue
+        if [ -n "$have" ] && satisfies "$have" "$want"; then mark="✓"; else mark="✗ differs"; MISMATCH=1; fi
+        printf '  %-11s %-14s %-12s %s\n' "$svc" "$want" "${have:--}" "$mark"
+    done
+    echo
+done
+
+if [ "${#MISSING[@]}" -gt 0 ]; then
+    echo "Adobe releases with no m2/ folder yet: ${MISSING[*]}"
+    echo "  (add one — see m2/README.md)"
+fi
+[ "$MISMATCH" = 0 ] && echo "✓ Catalog pins match Adobe's requirements." || echo "✗ Some pins differ — update the version.env files above."

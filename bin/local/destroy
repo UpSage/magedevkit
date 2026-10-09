@@ -1,0 +1,74 @@
+#!/bin/bash
+
+set -e
+set -o pipefail
+
+# PLATFORM_DIR, MAGENTO and the shared helpers (ui.sh, env.sh, paths.sh).
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
+
+# Destroys one instance completely: its containers, network and data volumes
+# (database, OpenSearch, Valkey, RabbitMQ), then the whole instance folder —
+# .env, magento/ (the code, with any uncommitted or unpushed work), certs,
+# logs and the database backups/snapshots in db/. There is no undo.
+#
+#   mrn -i NAME destroy --yes        (or PLATFORM_INSTANCE_DIR=… bin/local/destroy --yes)
+#
+# Instances only: a legacy checkout is the platform repo itself and is never
+# deleted. The dashboard's Danger zone runs this after showing what would be
+# lost and asking for the instance name.
+
+[ "${1:-}" = --yes ] || {
+    echo "This deletes the instance's containers, all of its data and its whole folder. Run it again with --yes to go ahead." >&2
+    exit 2
+}
+
+[ "$PLATFORM_MODE" = instance ] || fail "Only instances can be destroyed — this is a checkout of the platform repo ($PLATFORM_DIR)."
+
+TARGET="$(cd "$INSTANCE_DIR" && pwd -P)"
+[ -f "$TARGET/.platform-instance" ] || fail "$TARGET has no .platform-instance marker — refusing to delete it."
+case "$TARGET" in
+    /|"$HOME"|"$(cd "$PLATFORM_DIR" && pwd -P)"|"$(cd "$PLATFORM_DIR" && pwd -P)"/*) fail "Refusing to delete $TARGET." ;;
+esac
+NAME="$(basename "$TARGET")"
+APP_NAME="$(env_get "$TARGET/.env" APP_NAME)"
+APP_NAME="${APP_NAME:-$NAME}"
+APP_DOMAIN="$(env_get "$TARGET/.env" APP_DOMAIN)"
+
+wizard_lock
+
+log "Destroying instance $NAME ($TARGET)"
+if docker info >/dev/null 2>&1; then
+    log "Removing the containers, network and data volumes ..."
+    if [ -f "$ENV_FILE" ]; then
+        "$PLATFORM_DIR/bin/platform" down -v --remove-orphans || fail "docker compose down failed — nothing was deleted from disk."
+    fi
+    # Whatever compose didn't own any more (an older layout, a renamed stack).
+    mapfile -t LEFT < <({
+        docker ps -aq --filter "label=com.docker.compose.project=${APP_NAME}-platform"
+    } 2>/dev/null)
+    [ "${#LEFT[@]}" -gt 0 ] && docker rm -f "${LEFT[@]}" >/dev/null
+    mapfile -t VOLS < <({
+        docker volume ls -q --filter "label=com.docker.compose.project=${APP_NAME}-platform"
+        for v in db valkey rabbitmq opensearch; do
+            docker volume ls -q --filter "name=^${APP_NAME}-${v}-data\$"
+        done
+    } 2>/dev/null | sort -u)
+    if [ "${#VOLS[@]}" -gt 0 ]; then
+        docker volume rm "${VOLS[@]}" >/dev/null || fail "Couldn't remove the volumes ${VOLS[*]} — nothing was deleted from disk."
+        log "✓ Removed volumes: ${VOLS[*]}"
+    fi
+    log "✓ Containers and data volumes are gone"
+else
+    fail "Docker isn't reachable, so the containers and volumes can't be removed — start Docker and run this again. Nothing was deleted."
+fi
+
+log "Deleting $TARGET ..."
+exec 9>&-  # the lock file lives in the folder that's about to go
+cd /
+rm -rf -- "$TARGET"
+[ ! -e "$TARGET" ] || fail "Couldn't delete everything in $TARGET — check the permissions (files owned by www-data need: sudo rm -rf $TARGET)."
+log "✓ Instance $NAME is destroyed."
+if [ -n "$APP_DOMAIN" ]; then
+    log "Left for you (outside WSL): remove the line for $APP_DOMAIN from C:\\Windows\\System32\\drivers\\etc\\hosts."
+fi

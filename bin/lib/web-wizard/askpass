@@ -1,0 +1,10 @@
+#!/bin/bash
+# SUDO_ASKPASS helper for web-wizard runs: sudo -A calls this with its prompt
+# as $1, and whatever it prints is used as the password. The question is
+# asked on the wizard page (as a hidden field) through bin/lib/ui.sh.
+PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/ui.sh"
+ui_web || exit 1
+ui_ask password "${1:-[sudo] password for $USER} (needed for file ownership changes)" ''
+echo

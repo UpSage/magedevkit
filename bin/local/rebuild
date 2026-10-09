@@ -1,0 +1,41 @@
+#!/bin/bash
+
+set -e
+set -o pipefail
+
+# PLATFORM_DIR, MAGENTO and the shared helpers (ui.sh, env.sh, paths.sh).
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
+
+# Full Magento rebuild: optionally composer install/update first, then the
+# same rebuild the refresh and version wizards run (setup:upgrade,
+# di:compile, static content, reindex, cache) — see bin/lib/rebuild-engine.sh.
+#
+#   bin/local/rebuild [--composer install|update [vendor/package ...]]
+#
+# The browser version is bin/local/rebuild-wizard (also the dashboard's
+# Magento tab, where composer install/update run through it). There the
+# choice arrives as REBUILD_COMPOSER / REBUILD_PACKAGES.
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --composer)
+            REBUILD_COMPOSER="${2:?--composer needs install or update}"; shift 2
+            REBUILD_PACKAGES="$*"; break ;;
+        -h|--help) script_help "$0"; exit 0 ;;
+        *) echo "Unknown option '$1' (expected --composer install|update [packages])." >&2; exit 2 ;;
+    esac
+done
+export REBUILD_COMPOSER REBUILD_PACKAGES
+
+require_env_file
+# EXEC_USER (CLI identity) from FILE_OWNERSHIP — see bin/lib/identity.sh.
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/identity.sh"
+
+wizard_lock
+ui_flow_begin rebuild
+ui_log_to_file rebuild
+
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/rebuild-engine.sh"

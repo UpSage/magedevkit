@@ -1,0 +1,109 @@
+server {
+    listen 80 default_server;
+    server_name local.magento.test;
+
+    return 301 https://$host$request_uri;
+}
+
+# Edge: terminates TLS, then hands everything to Varnish. All app-serving
+# logic (static/media/fastcgi) lives in the internal-only backend block
+# below — Varnish only speaks plain HTTP and needs an HTTP backend to
+# forward cache-miss requests to.
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name local.magento.test;
+
+    ssl_certificate /etc/nginx/certs/local.magento.test.pem;
+    ssl_certificate_key /etc/nginx/certs/local.magento.test-key.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    client_max_body_size 64M;
+
+    location / {
+        proxy_pass http://varnish:80;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # Matches Magento's own web/secure/offloader_header default
+        # (X-Forwarded-Proto) and config/varnish/default.vcl's ssl-offload
+        # handling — lets Magento know the original request was HTTPS even
+        # though this hop to Varnish/backend is plain HTTP.
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_buffer_size 128k;
+        proxy_buffers 8 128k;
+        proxy_busy_buffers_size 256k;
+    }
+}
+
+# Backend: the actual Magento app server. Only reachable internally, from
+# Varnish (config/varnish/default.vcl's backend host/port) — never
+# published to the host. Unchanged app-serving logic, just moved here from
+# the old single TLS+app server block.
+server {
+    listen 8080;
+    server_name local.magento.test;
+
+    root /var/www/html/pub;
+    index index.php;
+
+    charset UTF-8;
+
+    client_max_body_size 64M;
+
+    # Remove Magento static-content version prefix
+    location ~ ^/static/version {
+        rewrite ^/static/version[^/]+/(.*)$ /static/$1 last;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    location /static/ {
+        try_files $uri $uri/ @static;
+    }
+
+    location ~* ^/static/.*\.(ico|jpg|jpeg|png|gif|svg|svgz|webp|avif|js|css|html|woff|woff2|ttf|otf)$ {
+        add_header Cache-Control "public";
+        expires 1y;
+
+        try_files $uri $uri/ @static;
+    }
+
+    # Not-yet-deployed files are generated on demand by static.php, which
+    # expects the path *without* the leading /static/ (e.g.
+    # frontend/Magento/luma/en_US/...) — same as Magento's nginx.conf.sample.
+    location @static {
+        rewrite ^/static/(.*)$ /static.php?resource=$1 last;
+    }
+
+    location /media/ {
+        try_files $uri $uri/ /get.php$is_args$args;
+    }
+
+    location ~ ^/(index|static|get|health_check)\.php(/|$) {
+        fastcgi_pass php:9000;
+        fastcgi_index index.php;
+
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+
+        fastcgi_buffer_size 128k;
+        fastcgi_buffers 8 128k;
+        fastcgi_busy_buffers_size 256k;
+
+        include fastcgi_params;
+    }
+
+    location ~ \.php$ {
+        return 404;
+    }
+
+    location ~* /\.(?!well-known).* {
+        deny all;
+    }
+}

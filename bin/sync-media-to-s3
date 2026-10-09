@@ -1,0 +1,59 @@
+#!/bin/bash
+
+log() {
+ echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+# Set variables
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/remote-storage.sh"
+
+PLATFORM_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/paths.sh"
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/env.sh"
+
+# No shared default bucket — fall back to the one bin/local/setup recorded.
+if [ -z "$REMOTE_STORAGE_BUCKET" ] && [ -f "$ENV_FILE" ]; then
+  REMOTE_STORAGE_BUCKET="$(env_get "$ENV_FILE" REMOTE_STORAGE_BUCKET)"
+  [ "$REMOTE_STORAGE_BUCKET" = "CHANGE_ME" ] && REMOTE_STORAGE_BUCKET=""
+fi
+[ -n "$REMOTE_STORAGE_BUCKET" ] || {
+  log "Error: no S3 bucket configured — set REMOTE_STORAGE_BUCKET in $ENV_NAME (or export it)."
+  exit 1
+}
+
+LOCAL_MEDIA_DIR="$MAGENTO_DIR/pub/media/"
+S3_MEDIA_PATH="s3://$REMOTE_STORAGE_BUCKET/media/"
+
+# Authenticates to S3 via a named CLI profile — same fallback
+# bin/sync-db already applies, needed here too since this runs as
+# its own process (a caller's `export AWS_PROFILE` doesn't carry over) and
+# direnv's .envrc hook may not have fired in a non-interactive invocation.
+: "${AWS_PROFILE:=${AWS_PROFILE_DEFAULT:-default}}"
+export AWS_PROFILE
+
+command -v aws >/dev/null 2>&1 || {
+  log "Error: aws CLI is not installed or not available in PATH."
+  exit 1
+}
+
+[ -d "$LOCAL_MEDIA_DIR" ] || {
+  log "Error: local media directory $LOCAL_MEDIA_DIR does not exist."
+  exit 1
+}
+
+# Local filesystem/media -> S3 (push) — this seeds/updates the bucket with this machine's current
+# pub/media content, for when Magento's storage driver is aws-s3.
+log "Syncing $LOCAL_MEDIA_DIR -> $S3_MEDIA_PATH ..."
+aws s3 sync "$LOCAL_MEDIA_DIR" "$S3_MEDIA_PATH"
+if [ $? -ne 0 ]; then
+  log "Error: Failed to sync $LOCAL_MEDIA_DIR to $S3_MEDIA_PATH."
+  exit 1
+fi
+
+log "Media sync complete."
+
+exit 0

@@ -1,0 +1,32 @@
+# @@HEADER@@
+#
+# The box's front door: Traefik on 80/443, with Let's Encrypt certificates
+# (HTTP challenge — the security group allows 80/443 only). It routes the
+# store's hostname to Varnish (labels in app.yml); other apps on the box
+# (e.g. a deploy dashboard) can join the `app` network with their own labels.
+
+services:
+  traefik:
+    image: traefik:${TRAEFIK_VERSION:-v3.5}
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=${APP_NAME}_app
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - letsencrypt:/letsencrypt
+    networks: [app]
+
+volumes:
+  letsencrypt:

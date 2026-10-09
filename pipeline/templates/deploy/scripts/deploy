@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# @@HEADER@@
+#
+# Brings the box to the release that after-install.sh just synced: the stack
+# at this release's pins (.platform/stack.env) and images (shared/release.env),
+# then Magento's database/config steps. Run by the ApplicationStart hook.
+#
+# Everything that can refuse a deploy runs before anything changes, and data
+# volumes are only touched by the guarded steps:
+#   MariaDB    — never downgraded (can't open newer data files); an upgrade
+#                takes a full dump first, then MARIADB_AUTO_UPGRADE upgrades
+#                the volume in place.
+#   OpenSearch — a major change can't open the old index data: the index
+#                volume is dropped and search is rebuilt by a reindex.
+#   Magento    — setup:upgrade only when setup:db:status says it's needed
+#                (most releases change no schema), with a dump first and
+#                maintenance mode around it.
+
+LOG_TAG=deploy
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# shellcheck disable=SC1091
+source "$DEPLOY_DIR/scripts/lib/site-checks.sh"
+load_box_env
+
+BACKUPS_KEEP=3
+
+prune_backups() {  # $1 = glob prefix
+    find "$BACKUP_DIR" -maxdepth 1 -name "$1*.sql.gz" -printf '%T@ %p\n' \
+        | sort -rn | tail -n +$((BACKUPS_KEEP + 1)) | cut -d' ' -f2- | xargs -r rm -f
+}
+
+dump_db() {  # $1 = file name prefix
+    local dump
+    mkdir -p "$BACKUP_DIR"
+    dump="$BACKUP_DIR/$1-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+    log "Dumping the database → $dump"
+    # shellcheck disable=SC2016
+    box_compose exec -T mariadb sh -c '
+        dump=$(command -v mariadb-dump || command -v mysqldump)
+        exec "$dump" -uroot -p"$MARIADB_ROOT_PASSWORD" --all-databases \
+            --single-transaction --quick --routines --events --triggers' \
+        | gzip > "$dump"
+    gzip -t "$dump" || fail "the dump $dump is corrupt — stopping before anything changes."
+    log "✓ Dump written ($(du -h "$dump" | cut -f1))"
+    prune_backups "$1"
+}
+
+# --- 1. Checks that can refuse the deploy (nothing changed yet) ----------------
+
+if [ -f "$MAGENTO_ROOT/app/etc/di.xml" ]; then
+    allowed=0
+    while read -r pattern; do
+        [ -n "$pattern" ] && printf '%s.0\n' "$MARIADB_VERSION" | grep -Eq "$pattern" && allowed=1
+    done < <(sed -n '/SqlVersionProvider/,/<\/type>/p' "$MAGENTO_ROOT/app/etc/di.xml" \
+        | grep -o '<item [^>]*>[^<]*</item>' | sed 's/<[^>]*>//g')
+    [ "$allowed" = 1 ] || fail "this release's app/etc/di.xml doesn't allow MariaDB $MARIADB_VERSION — setup:upgrade would refuse it. Fix the pin in .platform/stack.env or di.xml."
+    log "✓ Magento allows MariaDB $MARIADB_VERSION"
+fi
+
+DB_FROM="$(running_tag mariadb || true)"
+if [ -n "$DB_FROM" ] && version_lt "$MARIADB_VERSION" "$DB_FROM"; then
+    fail "MARIADB_VERSION $MARIADB_VERSION is older than the running $DB_FROM — MariaDB can't downgrade its data files."
+fi
+OS_FROM="$(running_tag opensearch || true)"
+
+log "Logging in to ECR ($ECR_REGISTRY)"
+aws ecr get-login-password --region "$AWS_REGION" \
+    | docker login --username AWS --password-stdin "$ECR_REGISTRY" >/dev/null
+log "Pulling images (php/nginx :$IMAGE_TAG)"
+box_compose pull --quiet
+
+# --- 2. Guarded data changes ---------------------------------------------------
+
+if [ -n "$DB_FROM" ] && [ "$DB_FROM" != "$MARIADB_VERSION" ]; then
+    log "MariaDB $DB_FROM → $MARIADB_VERSION"
+    dump_db "mariadb-${DB_FROM}-before-${MARIADB_VERSION}"
+fi
+
+REINDEX=0
+if [ -n "$OS_FROM" ] && [ "${OS_FROM%%.*}" != "${OPENSEARCH_VERSION%%.*}" ]; then
+    log "OpenSearch $OS_FROM → $OPENSEARCH_VERSION is a major change — dropping the index volume (rebuilt by a reindex below)"
+    box_compose rm -sf opensearch
+    docker volume rm "${APP}_opensearch-data" >/dev/null 2>&1 || true
+    REINDEX=1
+fi
+
+# --- 3. The stack --------------------------------------------------------------
+
+log "Starting the stack"
+box_compose up -d --no-build --remove-orphans
+# The app containers always restart: a changed bind-mounted config (nginx,
+# VCL, php ini) or new code would otherwise keep serving the old one.
+box_compose up -d --no-build --no-deps --force-recreate php cron nginx varnish
+wait_for_healthy 300 || fail "services didn't become healthy."
+log "✓ Services healthy"
+
+# --- 4. Magento ----------------------------------------------------------------
+
+TABLES="$(box_compose exec -T mariadb sh -c \
+    'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=\"$MARIADB_DATABASE\""' \
+    2>/dev/null | tr -d '[:space:]')"
+if [ "${TABLES:-0}" = 0 ]; then
+    fail "the database is empty — load one first on the box: $DEPLOY_DIR/scripts/box seed-db <s3://bucket/dump.sql.gz | file>, then retry the deployment."
+fi
+
+log "Waiting for OpenSearch"
+deadline=$((SECONDS + 120))
+until box_compose exec -T php curl -sf "http://opensearch:9200/_cluster/health" >/dev/null 2>&1; do
+    [ "$SECONDS" -ge "$deadline" ] && fail "OpenSearch didn't answer within 120s."
+    sleep 5
+done
+
+# setup:db:status exits 2 when schema/data patches are behind the code, 0 when
+# current. A release that only changes app/etc/config.php still needs it imported.
+set +e
+box_magento setup:db:status >/dev/null
+DB_STATUS=$?
+box_magento app:config:status >/dev/null
+CONFIG_STATUS=$?
+set -e
+case "$DB_STATUS" in
+    0|2) ;;
+    *) fail "setup:db:status failed (exit $DB_STATUS)." ;;
+esac
+
+if [ "$DB_STATUS" = 2 ]; then
+    dump_db "before-setup-upgrade"
+    log "Running setup:upgrade (maintenance mode on)"
+    box_magento maintenance:enable
+    # --keep-generated: generated/ is this release's own compiled output
+    # (built by build-release.sh and synced by after-install.sh).
+    if ! box_magento setup:upgrade --keep-generated; then
+        box_magento maintenance:disable || true
+        fail "setup:upgrade failed — the dump from just before is in $BACKUP_DIR."
+    fi
+    box_magento maintenance:disable
+elif [ "$CONFIG_STATUS" = 2 ]; then
+    log "app/etc/config.php changed — importing it"
+    box_magento app:config:import -n
+else
+    log "Database and config are current — no setup:upgrade needed"
+fi
+
+if [ "$REINDEX" = 1 ]; then
+    log "Rebuilding the search index"
+    box_magento indexer:reindex catalogsearch_fulltext
+fi
+
+log "Flushing caches"
+box_magento cache:flush
+box_compose exec -T varnish varnishadm 'ban req.url ~ .' >/dev/null || true
+
+docker image prune -f >/dev/null || true
+log "Done"

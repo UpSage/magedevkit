@@ -1,0 +1,39 @@
+# Shared edge proxy — the one thing on the machine that owns host ports
+# 80/443, so any number of platform stacks can run at once and each keeps a
+# port-less URL (https://<APP_DOMAIN>/). Started on demand by bin/platform up
+# (bin/lib/edge.sh) as its own fixed compose project, platform-edge; every
+# checkout ships this same file, so whichever starts it first owns it and the
+# rest reuse it. Never stopped by bin/platform down — other stacks may be
+# using it.
+#
+# Routes by hostname to each stack's nginx over the external platform-edge
+# network, from the labels in compose/docker-compose.local.yml:
+#   443 — TLS passthrough on SNI (nginx still terminates TLS with its own
+#         mkcert cert; Traefik never sees plaintext)
+#   80  — plain HTTP on the Host header (nginx redirects to https)
+
+name: platform-edge
+
+services:
+
+  traefik:
+    image: traefik:${TRAEFIK_VERSION:-v3}
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=platform-edge
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - platform-edge
+
+networks:
+
+  platform-edge:
+    external: true

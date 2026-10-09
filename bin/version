@@ -1,0 +1,13 @@
+#!/bin/bash
+
+set -e
+
+# Switches the installed Magento version: upgrade to a newer version in the
+# m2/ catalog, or roll back (downgrade) to a snapshot saved automatically
+# before an earlier switch.
+#
+# This file only dispatches to bin/local/version, which runs the actual
+# switch via bin/lib/version-engine.sh.
+
+# bin/local/version checks the instance and its env file itself.
+exec "$(dirname "${BASH_SOURCE[0]}")/local/version" "$@"

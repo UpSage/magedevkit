@@ -1,0 +1,134 @@
+# @@HEADER@@
+#
+# The store's stack on the EC2 box. Run through deploy/scripts/box compose
+# (project name = the app, env files: .platform/stack.env for the pins,
+# shared/.env for settings + secrets, shared/release.env for the image tag).
+# php and nginx come from this release's ECR images; the rest are the same
+# upstream images the local instance runs, at the same pins.
+
+name: ${APP_NAME}
+
+x-php: &php
+  image: ${ECR_REGISTRY}/${APP_NAME}-php:${IMAGE_TAG}
+  user: "${DEPLOY_UID}:${DEPLOY_GID}"
+  restart: unless-stopped
+  environment:
+    TZ: ${TZ:-UTC}
+  volumes:
+    - ${APP_HOME}/magento:/var/www/html
+    - ${APP_HOME}/deploy/config/php/99-app.ini:/usr/local/etc/php/conf.d/99-app.ini:ro
+  depends_on:
+    mariadb: { condition: service_healthy }
+    valkey: { condition: service_healthy }
+    rabbitmq: { condition: service_healthy }
+    opensearch: { condition: service_healthy }
+  networks: [app]
+
+services:
+  php: *php
+
+  # Magento cron (also starts the queue consumers through cron_consumers_runner).
+  cron:
+    <<: *php
+    command: ["sh", "-c", "while true; do php bin/magento cron:run >/dev/null 2>&1; sleep 60; done"]
+
+  nginx:
+    image: ${ECR_REGISTRY}/${APP_NAME}-nginx:${IMAGE_TAG}
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${APP_HOME}/magento:/var/www/html:ro
+      - ${APP_HOME}/deploy/config/nginx/magento-backend.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on: [php]
+    networks: [app]
+
+  varnish:
+    image: varnish:${VARNISH_VERSION}
+    restart: unless-stopped
+    command: ["varnishd", "-F", "-f", "/etc/varnish/default.vcl", "-a", ":80", "-s", "malloc,${VARNISH_CACHE_SIZE:-512m}"]
+    volumes:
+      - ${APP_HOME}/deploy/config/varnish/default.vcl:/etc/varnish/default.vcl:ro
+    depends_on: [nginx]
+    networks: [app]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.store.rule=Host(`${APP_DOMAIN}`)
+      - traefik.http.routers.store.entrypoints=websecure
+      - traefik.http.routers.store.tls.certresolver=le
+      - traefik.http.services.store.loadbalancer.server.port=80
+
+  mariadb:
+    image: mariadb:${MARIADB_VERSION}
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${DB_NAME}
+      MARIADB_USER: ${DB_USER}
+      MARIADB_PASSWORD: ${DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MARIADB_AUTO_UPGRADE: "1"
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [app]
+
+  valkey:
+    image: valkey/valkey:${VALKEY_VERSION}
+    restart: unless-stopped
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [app]
+
+  rabbitmq:
+    image: rabbitmq:${RABBITMQ_VERSION}-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+    networks: [app]
+
+  opensearch:
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION}
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms1g -Xmx1g}
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+    networks: [app]
+
+volumes:
+  db-data:
+  valkey-data:
+  rabbitmq-data:
+  opensearch-data:
+
+networks:
+  app:

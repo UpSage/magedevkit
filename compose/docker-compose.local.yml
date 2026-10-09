@@ -1,0 +1,86 @@
+# Local development overrides for the Magento platform stack — always
+# layered on top of compose/docker-compose.yml by bin/platform / bin/magento.
+
+services:
+
+  nginx:
+    # Adds the nginx config and mkcert certs mounts; the magento source mount
+    # is inherited unchanged from compose/docker-compose.yml.
+    volumes:
+      # The generated vhost and mkcert certificate belong to the instance
+      # (bin/lib/paths.sh: <instance>/nginx, <instance>/certs; legacy layout:
+      # config/nginx-local and its certs/).
+      - ${NGINX_CONF_DIR:-../config/nginx-local}:/etc/nginx/conf.d:ro
+      - ${CERTS_DIR:-../config/nginx-local/certs}:/etc/nginx/certs:ro
+    # Host ports 80/443 belong to the shared edge proxy
+    # (compose/edge/docker-compose.yml, started by bin/platform up), not to
+    # any one stack — it routes https://${APP_DOMAIN}/ here by hostname, so
+    # several stacks can run at once without port suffixes.
+    ports: !reset []
+    networks:
+      - up-network
+      - edge
+    # List form, not a mapping: Compose interpolates ${APP_NAME} in list
+    # entries but never in mapping keys.
+    labels:
+      - "traefik.enable=true"
+      # 443: TLS passthrough on SNI — nginx keeps terminating TLS itself.
+      - "traefik.tcp.routers.${APP_NAME:-app}-https.rule=HostSNI(`${APP_DOMAIN}`)"
+      - "traefik.tcp.routers.${APP_NAME:-app}-https.entrypoints=websecure"
+      - "traefik.tcp.routers.${APP_NAME:-app}-https.tls.passthrough=true"
+      - "traefik.tcp.routers.${APP_NAME:-app}-https.service=${APP_NAME:-app}-https"
+      - "traefik.tcp.services.${APP_NAME:-app}-https.loadbalancer.server.port=443"
+      # 80: plain HTTP on Host (nginx's own :80 block redirects to https).
+      - "traefik.http.routers.${APP_NAME:-app}-http.rule=Host(`${APP_DOMAIN}`)"
+      - "traefik.http.routers.${APP_NAME:-app}-http.entrypoints=web"
+      - "traefik.http.routers.${APP_NAME:-app}-http.service=${APP_NAME:-app}-http"
+      - "traefik.http.services.${APP_NAME:-app}-http.loadbalancer.server.port=80"
+      # Lets bin/local/setup refuse a domain another stack already serves.
+      - "platform.domain=${APP_DOMAIN}"
+      # Which instance folder this stack belongs to — every instance shares
+      # the repo's compose/ (so compose's own working_dir label is the same
+      # for all); the dashboard and setup's name check read this instead.
+      - "platform.instance_dir=${INSTANCE_DIR:-}"
+
+  php:
+    # php-fpm's identity follows FILE_OWNERSHIP in the env file (see
+    # bin/lib/identity.sh, which bin/platform/bin/magento/bin/composer source
+    # to export PHP_UID/PHP_GID before every docker compose invocation):
+    #   single    → your own uid:gid (one owner, nothing to chown)
+    #   two-owner → www-data 33:33 (Adobe's two-owner model)
+    # Switching models changes this, so the next `bin/platform up -d`
+    # recreates php. HOME/COMPOSER_HOME are set via the Dockerfile's ENV,
+    # since the host uid has no /etc/passwd entry in the image.
+    user: "${PHP_UID}:${PHP_GID}"
+    labels:
+      - "platform.instance_dir=${INSTANCE_DIR:-}"
+
+  mariadb:
+    ports:
+      - "${DB_PORT}:3306"
+
+  valkey:
+    ports:
+      - "${VALKEY_PORT}:6379"
+
+  rabbitmq:
+    ports:
+      - "${RABBITMQ_PORT}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT}:15672"
+
+  opensearch:
+    ports:
+      - "${OPENSEARCH_PORT}:9200"
+
+  mailpit:
+    ports:
+      - "${MAILPIT_HTTP_PORT}:8025"
+      - "${MAILPIT_SMTP_PORT}:1025"
+
+networks:
+
+  # Shared with the edge proxy and every other platform stack's nginx;
+  # created by bin/platform up (bin/lib/edge.sh) before compose needs it.
+  edge:
+    external: true
+    name: platform-edge

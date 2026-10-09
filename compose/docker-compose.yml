@@ -1,0 +1,241 @@
+name: ${APP_NAME:-app}-platform
+
+services:
+
+  # ==========================================================
+  # NGINX
+  # ==========================================================
+
+  nginx:
+    build:
+      context: ../docker/nginx
+      args:
+        NGINX_VERSION: ${NGINX_VERSION}
+        DEBIAN_RELEASE: ${DEBIAN_RELEASE:-bookworm}
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      # MAGENTO_DIR comes from bin/lib/paths.sh (an instance's magento/ or,
+      # in the legacy layout, the checkout's sibling ../magento).
+      - ${MAGENTO_DIR:-../../magento}:/var/www/html:ro
+    depends_on:
+      php:
+        condition: service_started
+    networks:
+      - up-network
+
+
+  # ==========================================================
+  # PHP-FPM
+  # ==========================================================
+
+  php:
+    build:
+      context: ../docker/php
+      args:
+        PHP_VERSION: ${PHP_VERSION}
+        DEBIAN_RELEASE: ${DEBIAN_RELEASE:-bookworm}
+        COMPOSER_VERSION: ${COMPOSER_VERSION:-2}
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ${MAGENTO_DIR:-../../magento}:/var/www/html
+      - ../config/php/99-app.ini:/usr/local/etc/php/conf.d/99-app.ini:ro
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    networks:
+      - up-network
+
+
+  # ==========================================================
+  # MARIADB
+  # ==========================================================
+
+  mariadb:
+    image: mariadb:${MARIADB_VERSION}
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${DB_NAME}
+      MARIADB_USER: ${DB_USER}
+      MARIADB_PASSWORD: ${DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      # Upgrades an existing data volume in place when MARIADB_VERSION is
+      # raised (e.g. switching Magento versions via the m2/ catalog).
+      MARIADB_AUTO_UPGRADE: "1"
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "healthcheck.sh",
+          "--connect",
+          "--innodb_initialized"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - up-network
+
+
+  # ==========================================================
+  # VALKEY
+  # ==========================================================
+
+  valkey:
+    image: valkey/valkey:${VALKEY_VERSION}
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --appendonly
+      - "yes"
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "valkey-cli",
+          "ping"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - up-network
+
+
+  # ==========================================================
+  # RABBITMQ
+  # ==========================================================
+
+  rabbitmq:
+    image: rabbitmq:${RABBITMQ_VERSION}-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "rabbitmq-diagnostics",
+          "-q",
+          "ping"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - up-network
+
+
+  # ==========================================================
+  # OPENSEARCH
+  # ==========================================================
+
+  opensearch:
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION}
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: "${OPENSEARCH_JAVA_OPTS:--Xms1g -Xmx1g}"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fs http://localhost:9200/_cluster/health || exit 1"
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    networks:
+      - up-network
+
+
+  # ==========================================================
+  # MAILPIT
+  # ==========================================================
+
+  mailpit:
+    image: axllent/mailpit:${MAILPIT_VERSION:-v1.30.5}
+    restart: unless-stopped
+    networks:
+      - up-network
+
+
+  # ==========================================================
+  # VARNISH
+  # ==========================================================
+
+  varnish:
+    image: varnish:${VARNISH_VERSION}
+    restart: unless-stopped
+    command:
+      - varnishd
+      - -F
+      - -f
+      - /etc/varnish/default.vcl
+      - -a
+      - :80
+      - -s
+      - malloc,${VARNISH_CACHE_SIZE:-256m}
+    volumes:
+      - ../config/varnish/default.vcl:/etc/varnish/default.vcl:ro
+    depends_on:
+      nginx:
+        condition: service_started
+    networks:
+      - up-network
+
+
+# ============================================================
+# NETWORKS
+# ============================================================
+
+networks:
+
+  up-network:
+    # No fixed subnet — Docker auto-assigns a free one per stack, so any
+    # number of stacks can coexist. Varnish's purge ACL
+    # (config/varnish/default.vcl) allow-lists the RFC1918 ranges instead,
+    # which covers whatever Docker picks.
+    driver: bridge
+
+
+# ============================================================
+# VOLUMES
+# ============================================================
+
+volumes:
+
+  db-data:
+    name: ${APP_NAME:-app}-db-data
+
+  valkey-data:
+    name: ${APP_NAME:-app}-valkey-data
+
+  rabbitmq-data:
+    name: ${APP_NAME:-app}-rabbitmq-data
+
+  opensearch-data:
+    name: ${APP_NAME:-app}-opensearch-data

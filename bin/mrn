@@ -1,0 +1,119 @@
+#!/bin/bash
+# mrn — MageRunner: one command for every local Magento instance.
+#
+# Which instance: `-i NAME` (a folder next to this repo, or under
+# PLATFORM_INSTANCES_ROOT), otherwise the instance folder you are in
+# (the nearest parent with a .platform-instance marker).
+#
+#   mrn magento cache:flush            bin/magento …
+#   mrn composer require vendor/pkg    bin/composer …
+#   mrn platform up -d                 bin/platform … (docker compose for the stack)
+#   mrn setup | refresh | version      the terminal flows
+#   mrn setup-wizard | refresh-wizard | version-wizard   the same, in the browser
+#   mrn pipeline | pipeline-wizard     make magento/ pipeline-ready (deploy/ kit)
+#   mrn rebuild [--composer install|update [pkgs]] | rebuild-wizard   full Magento rebuild
+#   mrn destroy --yes                  delete the instance: containers, data and its folder
+#   mrn build [--composer install|update [pkgs]]   Magento-only build (no container changes)
+#   mrn --version                      this platform's version (VERSION)
+#   mrn sync-db … | sync-media         database import / media upload to S3
+#   mrn mode developer|default|production|show
+#   mrn ownership single|two-owner
+#   mrn permissions apply|lock|unlock
+#   mrn new NAME [options]             create an instance (bin/local/new-instance)
+#   mrn dashboard [options]            the dashboard for all instances
+#   mrn list                           instances and their folders
+#
+# Install once with bin/local/install-mrn (a symlink in ~/.local/bin).
+
+set -e
+
+# The repo this command belongs to (follows the ~/.local/bin symlink).
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
+ROOT="${PLATFORM_INSTANCES_ROOT:-$(dirname "$REPO")}"
+
+die() {
+    echo "$(basename "$0"): $*" >&2
+    exit 1
+}
+
+usage() {  # the header comment above (same rule as bin/lib/ui.sh script_help)
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$SELF"
+}
+
+instances() {  # NAME<TAB>FOLDER for every instance under ROOT
+    local d
+    for d in "$ROOT"/*/; do
+        d="${d%/}"
+        [ -f "$d/.platform-instance" ] && printf '%s\t%s\n' "$(basename "$d")" "$d"
+    done
+    return 0
+}
+
+find_instance() {  # the instance folder for -i NAME or the current directory
+    local d
+    if [ -n "$INSTANCE" ]; then
+        [[ "$INSTANCE" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "'$INSTANCE' isn't an instance name."
+        d="$ROOT/$INSTANCE"
+        [ -f "$d/.platform-instance" ] || die "No instance '$INSTANCE' in $ROOT. Instances: $(instances | cut -f1 | tr '\n' ' ')"
+        printf '%s' "$d"
+        return
+    fi
+    d="$PWD"
+    while [ "$d" != / ]; do
+        if [ -f "$d/.platform-instance" ]; then
+            printf '%s' "$d"
+            return
+        fi
+        d="$(dirname "$d")"
+    done
+    die "Not inside an instance folder — cd into one (e.g. $ROOT/<name>) or use -i NAME. Instances: $(instances | cut -f1 | tr '\n' ' ')"
+}
+
+run() {  # run one of this repo's scripts for the chosen instance
+    local script="$REPO/bin/$1"
+    shift
+    [ -x "$script" ] || die "Unknown command (no $script)."
+    PLATFORM_INSTANCE_DIR="$(find_instance)"
+    export PLATFORM_INSTANCE_DIR
+    exec "$script" "$@"
+}
+
+INSTANCE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -i|--instance) shift; INSTANCE="${1:?-i needs an instance name}" ;;
+        -i=*|--instance=*) INSTANCE="${1#*=}" ;;
+        -h|--help|help) usage; exit 0 ;;
+        -V|--version|version) echo "MageRunner $(cat "$REPO/VERSION" 2>/dev/null || echo unknown) ($REPO)"; exit 0 ;;
+        *) break ;;
+    esac
+    shift
+done
+[ $# -gt 0 ] || { usage; exit 1; }
+
+CMD="$1"
+shift
+case "$CMD" in
+    magento|composer|platform|refresh|version|sync-db) run "$CMD" "$@" ;;
+    sync-media) run sync-media-to-s3 "$@" ;;
+    setup|setup-wizard|refresh-wizard|version-wizard|pipeline|pipeline-wizard|rebuild|rebuild-wizard|destroy) run "local/$CMD" "$@" ;;
+    build) run "local/magento-build" "$@" ;;
+    mode)
+        [[ "${1:-}" =~ ^(developer|default|production|show)$ ]] || die "Usage: mrn mode developer|default|production|show"
+        m="$1"; shift; run "mode/$m" "$@" ;;
+    ownership)
+        [[ "${1:-}" =~ ^(single|two-owner)$ ]] || die "Usage: mrn ownership single|two-owner"
+        o="$1"; shift; run "ownership/$o" "$@" ;;
+    permissions)
+        [[ "${1:-}" =~ ^(apply|lock|unlock)$ ]] || die "Usage: mrn permissions apply|lock|unlock"
+        p="$1"; shift; run "permissions/$p" "$@" ;;
+    new) exec "$REPO/bin/local/new-instance" "$@" ;;
+    dashboard) exec "$REPO/bin/local/dashboard" "$@" ;;
+    list)
+        out="$(instances)"
+        [ -n "$out" ] || { echo "No instances in $ROOT yet — create one with: mrn new NAME"; exit 0; }
+        printf '%s\n' "$out" | while IFS=$'\t' read -r n d; do printf '%-24s %s\n' "$n" "$d"; done
+        ;;
+    *) die "Unknown command '$CMD' — see mrn help." ;;
+esac

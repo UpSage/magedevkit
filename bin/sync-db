@@ -1,0 +1,11 @@
+#!/bin/bash
+
+set -o pipefail
+
+# Docker Magento DB refresh — dispatches to bin/local/sync-db, which resolves
+# its config via bin/lib/sync-db-config-engine.sh. The actual
+# sanitize/strip/import/verify work lives in bin/lib/db-refresh-engine.sh.
+# Run from anywhere: platform/bin/sync-db
+
+# bin/local/sync-db checks the instance and its env file itself.
+exec "$(dirname "${BASH_SOURCE[0]}")/local/sync-db" "$@"

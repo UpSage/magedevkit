@@ -1,0 +1,13 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Switches Magento to developer mode (unlocks a production tree first).
+# See bin/lib/mode-engine.sh for what this does. Safe to re-run; switch back any time
+# by running the sibling command.
+
+PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/mode-engine.sh"
+set_mode developer

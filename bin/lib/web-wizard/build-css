@@ -1,0 +1,38 @@
+#!/bin/bash
+# Rebuilds ui/wizard.css from ui/input.css with the Tailwind v4 standalone CLI
+# (a single binary — no Node). Only needed after changing classes in
+# ui/*.html or ui/*.js (wizard and dashboard); the result is committed, users
+# never run this.
+#   --check   exit 1 if the committed wizard.css is out of date
+set -euo pipefail
+
+TAILWIND_VERSION=v4.3.3
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/platform-tailwind/$TAILWIND_VERSION"
+
+case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) ASSET=tailwindcss-linux-x64 ;;
+    Linux-aarch64) ASSET=tailwindcss-linux-arm64 ;;
+    Darwin-arm64) ASSET=tailwindcss-macos-arm64 ;;
+    Darwin-x86_64) ASSET=tailwindcss-macos-x64 ;;
+    *) echo "Unsupported platform $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+esac
+BIN="$CACHE/$ASSET"
+if [ ! -x "$BIN" ]; then
+    mkdir -p "$CACHE"
+    echo "Downloading Tailwind $TAILWIND_VERSION ($ASSET) ..." >&2
+    curl -fsSL -o "$BIN.tmp" "https://github.com/tailwindlabs/tailwindcss/releases/download/$TAILWIND_VERSION/$ASSET"
+    chmod +x "$BIN.tmp"
+    mv "$BIN.tmp" "$BIN"
+fi
+
+OUT="$DIR/ui/wizard.css"
+if [ "${1:-}" = --check ]; then
+    TMP="$(mktemp)"
+    trap 'rm -f "$TMP"' EXIT
+    (cd "$DIR/ui" && "$BIN" -i input.css -o "$TMP" --minify >/dev/null 2>&1)
+    cmp -s "$TMP" "$OUT" && echo "wizard.css is up to date." || { echo "wizard.css is out of date — run $0" >&2; exit 1; }
+else
+    (cd "$DIR/ui" && "$BIN" -i input.css -o "$OUT" --minify)
+    echo "Wrote ${OUT#"$DIR/"} ($(wc -c < "$OUT") bytes)."
+fi

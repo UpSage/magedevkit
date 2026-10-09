@@ -1,0 +1,5 @@
+#!/bin/bash
+# Browser version of bin/local/rebuild — the same steps on a local webpage.
+# Options: --no-browser, --port N; after the flow name launch.sh also takes
+# install|update [packages…] for a composer run first. See bin/lib/web-wizard/launch.sh.
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/web-wizard" && pwd)/launch.sh" rebuild "$@"

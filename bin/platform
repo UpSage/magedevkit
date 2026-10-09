@@ -1,0 +1,47 @@
+#!/bin/bash
+
+set -e
+
+PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/paths.sh"
+require_env_file
+
+# Exports PHP_UID/PHP_GID for docker-compose.local.yml's php `user:` (and
+# EXEC_USER) from FILE_OWNERSHIP — exported here, not just in bin/magento,
+# since `up`/`restart`/etc. all go through this wrapper too and need the
+# same substitution to resolve.
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/identity.sh"
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/edge.sh"
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/ports.sh"
+
+APP_NAME="$(env_get "$ENV_FILE" APP_NAME)"
+PROJECT="${APP_NAME:-app}-platform"
+
+compose() {
+    docker compose \
+        --env-file "$ENV_FILE" \
+        -f "$PLATFORM_DIR/compose/docker-compose.yml" \
+        -f "$PLATFORM_DIR/compose/docker-compose.local.yml" \
+        "$@"
+}
+
+if [ "${1:-}" = "up" ]; then
+    # Stacks created before the network became up-network (auto-assigned
+    # subnet) still have the old af-network pinned to 172.28.0.0/16, which
+    # blocks any other stack from getting that range. Take the stack down
+    # once (containers only; the named data volumes survive) and remove the
+    # old network — `up` below recreates everything on up-network.
+    if docker network inspect "${PROJECT}_af-network" >/dev/null 2>&1; then
+        echo "Migrating ${PROJECT}_af-network → ${PROJECT}_up-network (auto-assigned subnet; data volumes are kept) ..." >&2
+        compose down --remove-orphans
+        docker network rm "${PROJECT}_af-network" >/dev/null
+    fi
+    ensure_edge
+    allocate_ports "$ENV_FILE" "$PROJECT"
+fi
+
+compose "$@"

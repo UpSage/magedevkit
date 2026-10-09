@@ -1,0 +1,141 @@
+/*
+ * Tailwind v4 entry for the web wizard and the dashboard. Classes are
+ * hand-written in index.html / kit.js / app.js / dashboard.html /
+ * dashboard.js using shadcn/ui's design tokens and component recipes;
+ * bin/lib/web-wizard/build-css compiles this into the committed wizard.css
+ * (no Node, no CDN — the page must work offline on a fresh machine).
+ */
+@import "tailwindcss";
+
+@source "./index.html";
+@source "./kit.js";
+@source "./app.js";
+@source "./dashboard.html";
+@source "./dash-core.js";
+@source "./dash-env.js";
+@source "./dash-git.js";
+@source "./dashboard.js";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* shadcn/ui tokens, Magento Admin palette (backend _colors.less). Status,
+ * primary and link colors are darkened (light) / lightened (dark) from the
+ * admin values so text on card, background and their /15 tints passes
+ * WCAG AA 4.5:1. */
+:root {
+  --radius: 0; /* square corners everywhere (only status dots and radio buttons stay round) */
+  --background: #f8f8f8;          /* admin page grey */
+  --foreground: #303030;          /* admin text */
+  --card: #ffffff;
+  --card-foreground: #303030;
+  --popover: #ffffff;
+  --popover-foreground: #303030;
+  --primary: #c94700;             /* phoenix #eb5202, darkened for white text */
+  --primary-foreground: #ffffff;
+  --secondary: #e3e3e3;           /* admin secondary button */
+  --secondary-foreground: #514943;  /* brownie */
+  --muted: #f1f1f1;
+  --muted-foreground: #6b6b6b;
+  --accent: #f1ece9;
+  --accent-foreground: #41362f;   /* brownie, almost black */
+  --destructive: #c41c1c;         /* admin error #e22626 */
+  --success: #376b18;             /* admin success #79a22e */
+  --warning: #8f5300;             /* admin warning #c07600 */
+  --link: #006bb4;                /* admin link #007bdb */
+  --border: #e3e3e3;
+  --input: #adadad;               /* admin input border */
+  --ring: #eb5202;                /* phoenix */
+  /* Sidebar: the Magento admin menu — the same in light and dark mode (so .dark
+     doesn't repeat these). */
+  --sidebar: #373330;
+  --sidebar-foreground: #d6d2cf;
+  --sidebar-accent: #514943;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-primary: #f26322;   /* active-item bar (non-text) */
+  --sidebar-border: rgb(255 255 255 / 10%);
+  --sidebar-success: #8fbf45;     /* status icons on the dark menu (≥ 3.8:1) */
+  --sidebar-destructive: #ff8a80;
+}
+
+.dark {
+  --background: #211d1b;          /* derived from admin menu #373330 */
+  --foreground: #f4f1ef;
+  --card: #2b2623;
+  --card-foreground: #f4f1ef;
+  --popover: #2b2623;
+  --popover-foreground: #f4f1ef;
+  --primary: #f26322;             /* Magento brand orange */
+  --primary-foreground: #211d1b;
+  --secondary: #3a3431;
+  --secondary-foreground: #f4f1ef;
+  --muted: #322c29;
+  --muted-foreground: #b5aca6;
+  --accent: #3a3431;
+  --accent-foreground: #f4f1ef;
+  --destructive: #ff8a80;
+  --success: #8fbf45;
+  --warning: #ffbe0a;             /* admin notice */
+  --link: #5aaef0;
+  --border: rgb(255 255 255 / 10%);
+  --input: rgb(255 255 255 / 18%);
+  --ring: #f26322;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-link: var(--link);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-success: var(--sidebar-success);
+  --color-sidebar-destructive: var(--sidebar-destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-3xl: 0;
+  --radius-4xl: 0;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  code, pre, kbd {
+    font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  }
+}

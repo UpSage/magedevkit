@@ -1,0 +1,36 @@
+# Environment / Secrets
+.env
+.env.*
+!.env.local.example
+.envrc
+
+# Runtime data
+volumes/
+
+# Logs
+logs/
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# DB Backups
+db/
+
+# Locally-generated TLS certs (mkcert) — each dev generates their own
+config/nginx-local/certs/
+
+# Generated from default.conf.template (bin/local/setup renders it per-machine,
+# substituting APP_DOMAIN) — the template is what's tracked, not this file.
+config/nginx-local/default.conf
+
+# Docker local overrides
+docker-compose.override.yml
+
+# Web wizard: one setup/refresh at a time per checkout
+.wizard.lock
+
+# Python bytecode (web-wizard / dashboard / tests)
+__pycache__/

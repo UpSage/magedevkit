@@ -1,0 +1,110 @@
+#!/bin/bash
+# Opens the MageRunner dashboard: every platform checkout on this machine
+# (found from Docker and by scanning the folder that holds this checkout),
+# its containers and health, safe actions (start/stop/restart, cache,
+# reindex, mode, composer) and the setup / refresh / version wizards.
+# See bin/lib/web-wizard/dashboard.py and README "Dashboard".
+#
+#   --no-browser   print the link only, don't open a browser
+#   --port N       listen on this port (default: the last one used, else any free port)
+#   --scan DIR     look for checkouts under DIR (repeatable; replaces the default)
+#
+# One dashboard per user: if it's already running, this prints its link.
+# It keeps running until Ctrl+C — operations it started carry on without it.
+
+set -e
+
+PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/ui.sh"
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/web-wizard/open-browser.sh"
+
+OPEN_BROWSER=1
+PORT=""
+SCAN_ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-browser) OPEN_BROWSER=0 ;;
+        --port) shift; PORT="${1:?--port needs a number}"
+                [[ "$PORT" =~ ^[0-9]+$ ]] || fail "--port needs a number." ;;
+        --scan) shift; [ -d "${1:-}" ] || fail "--scan needs a folder (got '${1:-}')."
+                SCAN_ARGS+=(--scan "$1") ;;
+        *) fail "Unknown option '$1' (expected --no-browser, --port N or --scan DIR)." ;;
+    esac
+    shift
+done
+
+command -v python3 >/dev/null 2>&1 || fail "python3 isn't installed (sudo apt install python3)."
+
+STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/platform-dashboard"
+STATE="$STATE_DIR/state.json"
+
+# state_field KEY — a value from the state file ('' if missing).
+state_field() {
+    python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
+except Exception: print("")' "$STATE" "$1"
+}
+
+# Already running? Trust the state file only if its pid is alive and the
+# server on its port answers with the same instance id.
+if [ -f "$STATE" ]; then
+    OLD_PID="$(state_field pid)"
+    OLD_PORT="$(state_field port)"
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null \
+        && [ "$(python3 - "$OLD_PORT" "$(state_field instance)" <<'PY'
+import json, sys, urllib.request
+try:
+    with urllib.request.urlopen("http://127.0.0.1:%s/api/ping" % sys.argv[1], timeout=2) as r:
+        print("yes" if json.load(r).get("instance") == sys.argv[2] else "no")
+except Exception:
+    print("no")
+PY
+)" = yes ]; then
+        URL="$(state_field url)"
+        printf '\n  The dashboard is already running (PID %s).\n\n  Open:  %s\n\n' "$OLD_PID" "$URL"
+        [ "$OPEN_BROWSER" = 1 ] && open_browser "$URL"
+        exit 0
+    fi
+    [ -n "$PORT" ] || PORT_ARGS=(--port "${OLD_PORT:-0}" --port-fallback)
+fi
+[ -n "$PORT" ] && PORT_ARGS=(--port "$PORT")
+
+DASHBOARD_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export DASHBOARD_TOKEN
+mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR"
+rm -f "$STATE"
+
+python3 "$PLATFORM_DIR/bin/lib/web-wizard/dashboard.py" --checkout "$PLATFORM_DIR" --state "$STATE" \
+    "${PORT_ARGS[@]}" "${SCAN_ARGS[@]}" &
+SERVER_PID=$!
+unset DASHBOARD_TOKEN
+
+for _ in $(seq 1 50); do
+    [ -s "$STATE" ] && [ "$(state_field pid)" = "$SERVER_PID" ] && break
+    kill -0 "$SERVER_PID" 2>/dev/null || { wait "$SERVER_PID"; exit $?; }
+    sleep 0.1
+done
+URL="$(state_field url)"
+[ -n "$URL" ] || { kill "$SERVER_PID" 2>/dev/null; fail "The dashboard didn't start (see logs/dashboard-server.log)."; }
+
+cat <<MSG
+
+  MageRunner dashboard is running.
+
+  Open:  $URL
+
+  It keeps running until you press Ctrl+C here. Operations started from it
+  (and wizard pages it opened) carry on when it stops.
+
+MSG
+[ "$OPEN_BROWSER" = 1 ] && open_browser "$URL"
+
+trap 'kill -INT "$SERVER_PID" 2>/dev/null' INT TERM HUP
+set +e
+wait "$SERVER_PID"
+CODE=$?
+# `wait` returns early when a trapped signal arrives; wait for the real exit.
+while kill -0 "$SERVER_PID" 2>/dev/null; do wait "$SERVER_PID"; CODE=$?; done
+exit $CODE

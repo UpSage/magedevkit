@@ -1,0 +1,26 @@
+#!/bin/bash
+
+set -e
+set -o pipefail
+
+# PLATFORM_DIR, MAGENTO and the shared helpers (ui.sh, env.sh, paths.sh).
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
+
+# Local's Magento version switcher: upgrade to a newer m2/ catalog version,
+# or roll back to a snapshot saved before an earlier switch — see
+# bin/lib/version-engine.sh. Dispatched to from bin/version; the browser
+# version is bin/local/version-wizard.
+
+require_env_file
+# EXEC_USER (CLI identity) from FILE_OWNERSHIP — see bin/lib/identity.sh.
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/identity.sh"
+
+# One setup/refresh/version switch at a time per checkout.
+wizard_lock
+ui_flow_begin version
+ui_log_to_file version
+
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/version-engine.sh"

@@ -1,0 +1,25 @@
+#!/bin/bash
+
+set -e
+
+# PLATFORM_DIR, MAGENTO and the shared helpers (ui.sh, env.sh, paths.sh).
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
+
+# Local's refresh entry point: resolves ENV_FILE/EXEC_USER, then runs the
+# pipeline (composer install, sync-db, Magento config, compile,
+# deploy) — see bin/lib/refresh-engine.sh. Dispatched to from bin/refresh.
+
+require_env_file
+# EXEC_USER (CLI identity) from FILE_OWNERSHIP — see bin/lib/identity.sh.
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/identity.sh"
+
+# One setup/refresh at a time per checkout (skipped when bin/local/setup is
+# the one running this — it already holds the lock and owns the step rail).
+wizard_lock
+ui_flow_begin refresh
+ui_log_to_file refresh
+
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/refresh-engine.sh"

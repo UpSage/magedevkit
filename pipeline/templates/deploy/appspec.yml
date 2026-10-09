@@ -1,0 +1,38 @@
+# @@HEADER@@
+#
+# CodeDeploy. build-release.sh copies this file to the root of the release
+# bundle (where CodeDeploy reads it). The revision lands in incoming/, never
+# directly on the live code — after-install.sh syncs it from there.
+
+version: 0.0
+os: linux
+
+files:
+  - source: /
+    destination: /opt/@@APP@@/incoming
+
+file_exists_behavior: OVERWRITE
+
+hooks:
+  ApplicationStop:
+    - location: deploy/scripts/hooks/application-stop.sh
+      timeout: 60
+      runas: deploy
+  # Waits (up to 55 min) for another deploy or a seed-db to finish.
+  BeforeInstall:
+    - location: deploy/scripts/hooks/before-install.sh
+      timeout: 3600
+      runas: deploy
+  AfterInstall:
+    - location: deploy/scripts/hooks/after-install.sh
+      timeout: 900
+      runas: deploy
+  ApplicationStart:
+    - location: deploy/scripts/hooks/application-start.sh
+      timeout: 2400
+      runas: deploy
+  # A failure here rolls back to the previous release.
+  ValidateService:
+    - location: deploy/scripts/hooks/validate.sh
+      timeout: 600
+      runas: deploy

@@ -1,0 +1,28 @@
+#!/bin/bash
+# Installs the `mrn` command (MageRunner: one command for every local
+# instance) as a symlink in ~/.local/bin pointing at this repo's bin/mrn.
+# Also removes the links of its retired names (mr, mb, m2w) when they point
+# at a MageRunner checkout. Safe to re-run; re-run it if you move this repo.
+set -e
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$BIN_DIR"
+ln -sfn "$REPO/bin/mrn" "$BIN_DIR/mrn"
+echo "Installed: $BIN_DIR/mrn → $REPO/bin/mrn"
+for old in mr mb m2w; do
+    target="$(readlink "$BIN_DIR/$old" 2>/dev/null || true)"
+    case "$target" in
+        */bin/mr|*/bin/mb|*/bin/m2w|*/bin/mrn)
+            rm -f "$BIN_DIR/$old"
+            echo "Removed the retired command: $BIN_DIR/$old" ;;
+    esac
+done
+case ":$PATH:" in
+    *":$BIN_DIR:"*) echo "Try it: mrn list" ;;
+    *)
+        # shellcheck disable=SC1091
+        source "$REPO/bin/lib/tools.sh"
+        local_bin_on_path
+        echo "Added ~/.local/bin to PATH in ~/.bashrc — open a new terminal (or run: source ~/.bashrc), then: mrn list"
+        ;;
+esac

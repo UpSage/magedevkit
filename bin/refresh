@@ -1,0 +1,16 @@
+#!/bin/bash
+
+set -e
+
+# Full local refresh pipeline: sync the DB, reinstall
+# dependencies, and reapply every config setting that a fresh production DB
+# import wipes out or that a fresh vendor/ install needs. Applies
+# MAGENTO_MODE (default/developer/production) and recompiles DI/static
+# content; production also re-locks file permissions at the end. Safe to
+# re-run any time.
+#
+# This file only dispatches to bin/local/refresh, which runs the actual
+# pipeline via bin/lib/refresh-engine.sh.
+
+# bin/local/refresh checks the instance and its env file itself.
+exec "$(dirname "${BASH_SOURCE[0]}")/local/refresh" "$@"

@@ -1,0 +1,37 @@
+#!/bin/bash
+
+set -e
+
+PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/paths.sh"
+require_env_file
+
+# Same CLI identity as bin/magento (bin/lib/identity.sh) — composer runs
+# inside the php container as you, in /var/www/html (the magento checkout),
+# so vendor/ and composer.lock stay owned by you.
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/identity.sh"
+
+# No pseudo-TTY when stdin isn't a terminal, so piped/scripted calls
+# (e.g. `bin/composer show | grep x`) work instead of failing.
+TTY_FLAG=()
+[ -t 0 ] || TTY_FLAG=(-T)
+
+# Forward COMPOSER_AUTH (JSON, same shape as auth.json) when the caller set
+# it — used by bin/local/setup's fresh install, where create-project needs
+# repo.magento.com credentials before magento/auth.json can exist.
+ENV_FLAG=()
+[ -n "${COMPOSER_AUTH:-}" ] && ENV_FLAG=(-e COMPOSER_AUTH)
+
+docker compose \
+    --env-file "$ENV_FILE" \
+    -f "$PLATFORM_DIR/compose/docker-compose.yml" \
+    -f "$PLATFORM_DIR/compose/docker-compose.local.yml" \
+    exec \
+    "${TTY_FLAG[@]}" \
+    "${ENV_FLAG[@]}" \
+    --user "$EXEC_USER" \
+    php \
+    composer "$@"

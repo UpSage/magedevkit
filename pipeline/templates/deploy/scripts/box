@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# @@HEADER@@
+#
+# Operator commands on the EC2 box (run as the deploy user, e.g. over SSM
+# Session Manager: sudo -iu deploy). These are also the only actions a
+# deploy dashboard may call — nothing here edits code.
+#
+#   box status                     containers, release, health
+#   box compose <args>             docker compose for this stack
+#   box magento <args>             bin/magento in the php container
+#   box maintenance on|off
+#   box cache-flush                Magento caches + Varnish
+#   box reindex [indexer…]
+#   box restart <service>          php, nginx, varnish, cron, …
+#   box seed-db <s3://…|file>      load a .sql.gz into the (empty) database
+#   box rollback                   start a CodeDeploy redeploy of the previous release
+
+LOG_TAG=box
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# shellcheck disable=SC1091
+source "$DEPLOY_DIR/scripts/lib/site-checks.sh"
+
+usage() { sed -n '/^#   box/s/^#   //p' "$0"; exit "${1:-0}"; }
+
+cmd="${1:-}"
+[ -n "$cmd" ] || usage 1
+shift
+load_box_env
+
+case "$cmd" in
+    status)
+        box_compose ps
+        echo
+        [ -f "$SHARED/release.json" ] && { echo "Release: $(cat "$SHARED/release.json")"; echo; }
+        if wait_for_https / 10 2>/dev/null; then echo "https://$APP_DOMAIN/ answers 200"; else echo "https://$APP_DOMAIN/ isn't answering 200"; fi
+        ;;
+    compose) box_compose "$@" ;;
+    magento) box_magento "$@" ;;
+    maintenance)
+        case "${1:-}" in
+            on) box_magento maintenance:enable ;;
+            off) box_magento maintenance:disable ;;
+            *) usage 1 ;;
+        esac
+        ;;
+    cache-flush)
+        box_magento cache:flush
+        box_compose exec -T varnish varnishadm 'ban req.url ~ .' >/dev/null
+        log "✓ Magento caches and Varnish flushed"
+        ;;
+    reindex) box_magento indexer:reindex "$@" ;;
+    restart)
+        [ -n "${1:-}" ] || usage 1
+        box_compose restart "$1"
+        ;;
+    seed-db)
+        src="${1:?usage: box seed-db <s3://bucket/key.sql.gz | /path/dump.sql.gz>}"
+        # shellcheck disable=SC1091
+        source "$DEPLOY_DIR/scripts/lib/deploy-lock.sh"
+        APPLICATION_NAME=box DEPLOYMENT_ID="seed-db-$$"
+        export APPLICATION_NAME DEPLOYMENT_ID
+        deploy_lock_acquire
+        trap deploy_lock_release EXIT
+        file="$src"
+        if [[ "$src" == s3://* ]]; then
+            file="$BACKUP_DIR/seed-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+            mkdir -p "$BACKUP_DIR"
+            log "Downloading $src"
+            aws s3 cp --only-show-errors "$src" "$file"
+        fi
+        gzip -t "$file" || fail "$file isn't a valid .gz file."
+        box_compose up -d mariadb
+        wait_for_healthy 180 || fail "mariadb isn't healthy."
+        log "Importing $file into the database (replaces its contents)"
+        # shellcheck disable=SC2016
+        box_compose exec -T mariadb sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" -e "DROP DATABASE IF EXISTS \`$MARIADB_DATABASE\`; CREATE DATABASE \`$MARIADB_DATABASE\`; GRANT ALL ON \`$MARIADB_DATABASE\`.* TO \"$MARIADB_USER\"@\"%\";"'
+        # Strip DEFINER clauses (they name users that don't exist here).
+        gunzip -c "$file" | sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g' \
+            | box_compose exec -T mariadb sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE"'
+        log "✓ Imported. Retry the deployment (or run: box magento setup:upgrade --keep-generated)."
+        ;;
+    rollback)
+        prev="$(grep '"result": "live"' "$SHARED/deploys.jsonl" 2>/dev/null | tail -2 | head -1 || true)"
+        [ -n "$prev" ] || fail "no earlier live release recorded in $SHARED/deploys.jsonl."
+        log "Previous live release: $prev"
+        log "Roll back from the AWS console or CLI: CodeDeploy → $APP-$ENV_NAME → deployment of that release → Redeploy."
+        ;;
+    -h|--help|help) usage ;;
+    *) usage 1 ;;
+esac

@@ -1,0 +1,13 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Makes code writable again (e.g. to run composer by hand in production mode).
+# See bin/lib/permissions-engine.sh for what this does. Safe to re-run; switch back any time
+# by running the sibling command.
+
+PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/permissions-engine.sh"
+perm_unlock

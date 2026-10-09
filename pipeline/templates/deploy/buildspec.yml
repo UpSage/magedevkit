@@ -1,0 +1,66 @@
+# @@HEADER@@
+#
+# CodeBuild (privileged, for Docker). The CodeBuild project created by
+# deploy/infra points at this file and sets APP_NAME, ENV_NAME and
+# COMPOSER_AUTH_PARAM.
+#
+#   1. php/nginx images from deploy/docker at the pins in .platform/stack.env,
+#      tagged by a hash of those inputs — built and pushed only when ECR
+#      doesn't have that tag yet (most pushes change only code).
+#   2. The release, built by deploy/scripts/build-release.sh inside that php
+#      image — the same image the box runs, so build and runtime always share
+#      one PHP version and extension set.
+#   3. The bundle (.build/release, appspec.yml at its root) goes to CodeDeploy.
+
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        set -a; . .platform/stack.env; set +a
+        ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+        ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        IMAGE_TAG="s-$(cat .platform/stack.env $(find deploy/docker -type f | sort) | sha256sum | cut -c1-16)"
+        printf 'ECR_REGISTRY=%s\nIMAGE_TAG=%s\n' "$ECR_REGISTRY" "$IMAGE_TAG" > /tmp/build.env
+        echo "[buildspec] images ${APP_NAME}-php/nginx:${IMAGE_TAG}"
+        aws ecr get-login-password --region "$AWS_REGION" \
+          | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+        for svc in php nginx; do
+          repo="${APP_NAME}-${svc}"
+          if aws ecr describe-images --repository-name "$repo" --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "[buildspec] $repo:$IMAGE_TAG already in ECR — not rebuilding"
+            continue
+          fi
+          echo "[buildspec] building $repo:$IMAGE_TAG"
+          docker build --quiet \
+            --build-arg PHP_VERSION="$PHP_VERSION" --build-arg NGINX_VERSION="$NGINX_VERSION" \
+            --build-arg DEBIAN_RELEASE="$DEBIAN_RELEASE" --build-arg COMPOSER_VERSION="$COMPOSER_VERSION" \
+            -t "$ECR_REGISTRY/$repo:$IMAGE_TAG" "deploy/docker/$svc"
+          docker push --quiet "$ECR_REGISTRY/$repo:$IMAGE_TAG"
+        done
+
+  build:
+    commands:
+      # COMPOSER_AUTH is read here (never echoed — only its length is logged)
+      # and handed to the container by name, so it never appears on a command line.
+      - |
+        set -euo pipefail
+        . /tmp/build.env
+        COMPOSER_AUTH="$(aws ssm get-parameter --name "$COMPOSER_AUTH_PARAM" --with-decryption \
+          --query Parameter.Value --output text)"
+        export COMPOSER_AUTH
+        echo "[buildspec] COMPOSER_AUTH set (${#COMPOSER_AUTH} bytes)"
+        PHP_IMAGE="$ECR_REGISTRY/${APP_NAME}-php:$IMAGE_TAG"
+        docker pull --quiet "$PHP_IMAGE"
+        docker run --rm \
+          -e COMPOSER_AUTH -e COMPOSER_ALLOW_SUPERUSER=1 -e CODEBUILD_RESOLVED_SOURCE_VERSION -e STATIC_LOCALES \
+          -e IMAGE_TAG="$IMAGE_TAG" -e ECR_REGISTRY="$ECR_REGISTRY" \
+          -v "$PWD:/src" -w /src \
+          --entrypoint bash "$PHP_IMAGE" deploy/scripts/build-release.sh
+
+artifacts:
+  base-directory: .build/release
+  files:
+    - "**/*"

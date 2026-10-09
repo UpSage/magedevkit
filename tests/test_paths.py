@@ -1,0 +1,220 @@
+"""bin/lib/paths.sh (instance vs legacy layout), bin/local/new-instance
+(data-only instance folders) and bin/mrn (one command for every instance),
+run against a throwaway copy of the scripts."""
+
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+import helpers
+
+PROBE = """#!/bin/bash
+PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/%s" && pwd)"
+source "$PLATFORM_DIR/bin/lib/paths.sh"
+require_env_file
+echo "MODE=$PLATFORM_MODE"
+echo "CODE=$PLATFORM_DIR"
+echo "INSTANCE=$INSTANCE_DIR"
+echo "ENV=$ENV_FILE"
+echo "ENV_NAME=$ENV_NAME"
+echo "MAGENTO=$MAGENTO_DIR"
+echo "NGINX=$NGINX_CONF_DIR"
+echo "CERTS=$CERTS_DIR"
+echo "LOCK=$LOCK_FILE"
+echo "DB=$DB_DIR"
+echo "ARGS=$*"
+"""
+
+
+def parse(out):
+    return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+
+class Paths(unittest.TestCase):
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="paths-"))
+        # A copy of the scripts new-instance and paths.sh need, plus probes.
+        self.repo = os.path.join(self.tmp, "platform-repo")
+        for rel in ("bin/lib/paths.sh", "bin/lib/ui.sh", "bin/lib/env.sh", "bin/lib/util.sh", "bin/local/new-instance", "bin/mrn",
+                    "env/.env.local.example"):
+            src = os.path.join(helpers.REPO, rel)
+            dst = os.path.join(self.repo, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+        helpers.write(os.path.join(self.repo, "bin", "probe"), PROBE % "..", 0o755)
+        # mrn routes `magento` to bin/magento and `setup-wizard` to bin/local/setup-wizard
+        helpers.write(os.path.join(self.repo, "bin", "magento"), PROBE % "..", 0o755)
+        helpers.write(os.path.join(self.repo, "bin", "local", "setup-wizard"), PROBE % "../..", 0o755)
+        helpers.write(os.path.join(self.repo, "bin", "local", "pipeline-wizard"), PROBE % "../..", 0o755)
+        self.root = os.path.join(self.tmp, "sites")
+        os.makedirs(self.root)
+        # A docker that is "not running", so new-instance skips its Docker check.
+        self.fakebin = os.path.join(self.tmp, "fakebin")
+        helpers.write(os.path.join(self.fakebin, "docker"), "#!/bin/sh\nexit 1\n", 0o755)
+        self.env = dict(os.environ, PLATFORM_INSTANCES_ROOT=self.root,
+                        PATH=self.fakebin + os.pathsep + os.environ["PATH"])
+        for k in ("PLATFORM_INSTANCE_DIR", "MAGENTO_DIR", "ENV_FILE"):
+            self.env.pop(k, None)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_(self, argv, env=None, **kw):
+        return subprocess.run(argv, env=env or self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, timeout=60, **kw)
+
+    def new_instance(self, *args):
+        return self.run_([os.path.join(self.repo, "bin", "local", "new-instance")] + list(args))
+
+    # -- new-instance ---------------------------------------------------------------
+
+    def test_creates_instance_folder(self):
+        p = self.new_instance("shop_one", "--no-setup")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        d = os.path.join(self.root, "shop_one")
+        for rel in (".platform-instance", ".env", "magento", "nginx", "certs", "logs", "db"):
+            self.assertTrue(os.path.exists(os.path.join(d, rel)), rel)
+        self.assertFalse(os.path.exists(os.path.join(d, "bin")))   # data only — commands go through mrn
+        env = helpers.read(os.path.join(d, ".env"))
+        self.assertIn("APP_NAME=shop_one\n", env)
+        self.assertIn("APP_DOMAIN=shop-one.test\n", env)
+        self.assertEqual(oct(os.stat(os.path.join(d, ".env")).st_mode & 0o777), "0o600")
+        self.assertIn("PLATFORM_REPO=%s" % self.repo, helpers.read(os.path.join(d, ".platform-instance")))
+
+    def test_rejects_bad_names_and_foreign_folders(self):
+        for bad in ("Shop", "a.b", "-x", "has space", "x" * 41, ""):
+            p = self.new_instance(bad, "--no-setup")
+            self.assertNotEqual(p.returncode, 0, bad)
+        os.makedirs(os.path.join(self.root, "taken"))
+        p = self.new_instance("taken", "--no-setup")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("isn't an instance folder", p.stdout)
+        # the repo's own folder, when instances live next to it (the default)
+        p = self.run_([os.path.join(self.repo, "bin", "local", "new-instance"), "platform-repo", "--no-setup"],
+                      env=dict(self.env, PLATFORM_INSTANCES_ROOT=self.tmp))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("platform repo's own folder", p.stdout)
+
+    def test_rerun_keeps_env_and_removes_old_launchers_only(self):
+        self.assertEqual(self.new_instance("keep", "--no-setup").returncode, 0)
+        d = os.path.join(self.root, "keep")
+        with open(os.path.join(d, ".env"), "a") as f:
+            f.write("CUSTOM=1\n")
+        # launchers made by older versions + a file of the user's own
+        helpers.write(os.path.join(d, "bin", "magento"), "#!/bin/bash\n# Generated by bin/local/new-instance — x\n", 0o755)
+        helpers.write(os.path.join(d, "bin", "local", "setup"), "#!/bin/bash\n# Generated by bin/local/new-instance — x\n", 0o755)
+        helpers.write(os.path.join(d, "bin", "mine.sh"), "#!/bin/bash\necho mine\n", 0o755)
+        p = self.new_instance("keep", "--no-setup")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("Removed 2 old bin/ launchers", p.stdout)
+        self.assertIn("CUSTOM=1", helpers.read(os.path.join(d, ".env")))
+        self.assertEqual(sorted(os.listdir(os.path.join(d, "bin"))), ["mine.sh"])
+
+    # -- mrn + paths.sh ---------------------------------------------------------------
+
+    def mrn(self, *args, cwd=None, env=None):
+        return self.run_([os.path.join(self.repo, "bin", "mrn")] + list(args), env=env, cwd=cwd or self.tmp)
+
+    def test_mrn_runs_repo_scripts_for_the_instance(self):
+        self.assertEqual(self.new_instance("alpha", "--no-setup").returncode, 0)
+        self.assertEqual(self.new_instance("beta", "--no-setup").returncode, 0)
+        d = os.path.join(self.root, "alpha")
+        env = dict(self.env, MAGENTO_DIR="/wrong", ENV_FILE="/wrong")  # stale values are ignored
+        os.makedirs(os.path.join(d, "magento", "app"))
+        for args, cwd in ((("magento", "x y"), d),                                   # inside the instance
+                          (("magento", "x y"), os.path.join(d, "magento", "app")),   # deeper inside
+                          (("-i", "alpha", "magento", "x y"), "/"),                   # by name, from anywhere
+                          (("-i", "alpha", "setup-wizard", "x y"), "/"),
+                          (("-i", "alpha", "pipeline-wizard", "x y"), "/")):
+            p = self.mrn(*args, cwd=cwd, env=env)
+            self.assertEqual(p.returncode, 0, p.stdout)
+            v = parse(p.stdout)
+            self.assertEqual(v["MODE"], "instance")
+            self.assertEqual(v["CODE"], self.repo)
+            self.assertEqual(v["INSTANCE"], d)
+            self.assertEqual(v["ENV"], os.path.join(d, ".env"))
+            self.assertEqual(v["ENV_NAME"], ".env")
+            self.assertEqual(v["MAGENTO"], os.path.join(d, "magento"))
+            self.assertEqual(v["NGINX"], os.path.join(d, "nginx"))
+            self.assertEqual(v["CERTS"], os.path.join(d, "certs"))
+            self.assertEqual(v["LOCK"], os.path.join(d, ".wizard.lock"))
+            self.assertEqual(v["DB"], os.path.join(d, "db"))
+            self.assertEqual(v["ARGS"], "x y")
+        # -i wins over the current folder
+        p = self.mrn("-i", "beta", "magento", cwd=d)
+        self.assertEqual(parse(p.stdout)["INSTANCE"], os.path.join(self.root, "beta"))
+
+    def test_mrn_is_the_only_command(self):
+        self.assertEqual(self.new_instance("alpha", "--no-setup").returncode, 0)
+        p = self.run_([os.path.join(self.repo, "bin", "mrn"), "list"], cwd=self.tmp)
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("alpha", p.stdout)
+        for old in ("mr", "mb", "m2w"):   # retired names are gone
+            self.assertFalse(os.path.exists(os.path.join(helpers.REPO, "bin", old)), old)
+        p = self.run_([os.path.join(self.repo, "bin", "mrn"), "help"], cwd=self.tmp)
+        self.assertIn("mrn dashboard", p.stdout)
+
+    def test_mrn_errors_and_list(self):
+        self.assertEqual(self.new_instance("alpha", "--no-setup").returncode, 0)
+        p = self.mrn("magento", "x", cwd=self.tmp)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("Not inside an instance folder", p.stdout)
+        self.assertIn("alpha", p.stdout)
+        for args in (("-i", "nope", "magento"), ("-i", "../x", "magento"), ("frobnicate",), ("mode", "turbo")):
+            p = self.mrn(*args, cwd=self.tmp)
+            self.assertNotEqual(p.returncode, 0, args)
+        p = self.mrn("list")
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("alpha", p.stdout)
+        self.assertEqual(self.mrn("help").returncode, 0)
+
+    def test_mrn_new_creates_instance(self):
+        p = self.mrn("new", "gamma", "--no-setup")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "gamma", ".platform-instance")))
+        self.assertIn("mrn setup-wizard", p.stdout)
+
+    def test_bin_magento_is_non_interactive_without_a_tty(self):
+        # the real bin/magento against a fake `docker` that prints its argv
+        for rel in ("bin/magento", "bin/lib/identity.sh"):
+            dst = os.path.join(self.repo, rel)
+            shutil.copy2(os.path.join(helpers.REPO, rel), dst)
+        self.assertEqual(self.new_instance("alpha", "--no-setup").returncode, 0)
+        helpers.write(os.path.join(self.fakebin, "docker"), "#!/bin/sh\necho \"docker $*\"\n", 0o755)
+        p = self.mrn("-i", "alpha", "magento", "setup:upgrade", cwd="/")   # stdin is not a TTY here
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn(" exec -T --user ", p.stdout)
+        self.assertIn("php bin/magento --no-interaction setup:upgrade", p.stdout)
+
+    def test_instance_needs_marker(self):
+        d = os.path.join(self.root, "nomarker")
+        helpers.write(os.path.join(d, ".env"), "APP_NAME=nomarker\n")
+        p = self.run_([os.path.join(self.repo, "bin", "probe")], env=dict(self.env, PLATFORM_INSTANCE_DIR=d))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("isn't an instance folder", p.stdout)
+
+    def test_legacy_layout(self):
+        proj = os.path.join(self.tmp, "proj")
+        platform = os.path.join(proj, "platform")
+        shutil.copytree(self.repo, platform)
+        helpers.write(os.path.join(platform, "env", ".env.local"), "APP_NAME=legacy\n")
+        p = self.run_([os.path.join(platform, "bin", "probe")])
+        self.assertEqual(p.returncode, 0, p.stdout)
+        v = parse(p.stdout)
+        self.assertEqual(v["MODE"], "legacy")
+        self.assertEqual(v["INSTANCE"], platform)
+        self.assertEqual(v["ENV"], os.path.join(platform, "env", ".env.local"))
+        self.assertEqual(v["MAGENTO"], os.path.join(proj, "magento"))
+        self.assertEqual(v["NGINX"], os.path.join(platform, "config", "nginx-local"))
+        self.assertEqual(v["CERTS"], os.path.join(platform, "config", "nginx-local", "certs"))
+
+    def test_shared_repo_refuses_to_be_an_instance(self):
+        p = self.run_([os.path.join(self.repo, "bin", "probe")])
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("shared platform repo", p.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

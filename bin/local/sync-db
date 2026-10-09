@@ -1,0 +1,29 @@
+#!/bin/bash
+
+set -o pipefail
+
+# PLATFORM_DIR, MAGENTO and the shared helpers (ui.sh, env.sh, paths.sh).
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
+
+# Local's DB-refresh entry point. The config-resolution logic (prompts,
+# storage driver, production facts) lives in
+# bin/lib/sync-db-config-engine.sh — this file supplies the helpers above,
+# the DB credentials (from the env file), and the env file. Dispatched to from
+# bin/sync-db.
+
+require_env_file
+# Never two DB replacements (or a DB replacement and a setup/refresh) at
+# once; a no-op when setup/refresh already hold the lock for this run.
+wizard_lock
+
+set -a
+source "$ENV_FILE"
+set +a
+# MARIADB_* from DB_* (db_credentials_from_env), then the questions and the
+# import itself.
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/db-backup.sh"
+db_credentials_from_env
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/sync-db-config-engine.sh"

@@ -1,0 +1,4 @@
+#!/bin/bash
+# Browser version of bin/refresh — the same steps and questions on a local webpage.
+# Options: --no-browser, --port N. See bin/lib/web-wizard/launch.sh.
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/web-wizard" && pwd)/launch.sh" refresh "$@"

@@ -1,0 +1,13 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Shows the configured vs. actual Magento mode and the ownership model.
+# See bin/lib/mode-engine.sh for what this does. Safe to re-run; switch back any time
+# by running the sibling command.
+
+PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/mode-engine.sh"
+show_mode

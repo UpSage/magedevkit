@@ -1,0 +1,23 @@
+#!/bin/bash
+
+set -e
+set -o pipefail
+
+# PLATFORM_DIR, MAGENTO and the shared helpers (ui.sh, env.sh, paths.sh).
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
+
+# Pipeline wizard: makes this instance's Magento repo pipeline-ready by
+# writing the pipeline kit into magento/deploy/ and committing it on a local
+# branch — see bin/lib/pipeline-engine.sh. The browser version is
+# bin/local/pipeline-wizard (also on the dashboard's Pipeline tab).
+
+require_env_file
+
+# One wizard at a time per instance.
+wizard_lock
+ui_flow_begin pipeline
+ui_log_to_file pipeline
+
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/pipeline-engine.sh"
