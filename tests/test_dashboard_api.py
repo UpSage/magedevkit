@@ -1,4 +1,5 @@
 import fcntl
+import json
 import os
 import shutil
 import subprocess
@@ -200,6 +201,70 @@ class DashboardApi(unittest.TestCase):
         self.assertIn("bin/local/magento-build --composer update amasty/shipping-rules", calls(self.b))
         for bad in ({"composer": "remove"}, {"composer": "install", "packages": ["a/b"]}, {"composer": "update", "packages": ["a;b"]}):
             self.assertEqual(self.dash.request("POST", "/api/environments/stack-b/actions/magento_build", bad)[0], 400, bad)
+
+    def test_modules(self):
+        md = os.path.join(os.path.dirname(self.b), "magento")
+        helpers.write(os.path.join(md, "app", "etc", "config.php"),
+                      "<?php\nreturn [\n    'modules' => [\n        'Magento_Store' => 1,\n        'Amasty_Base' => 0,\n    ],\n];\n")
+        code, body, _ = self.dash.request("GET", "/api/environments/stack-b/modules")
+        self.assertEqual(code, 200, body)
+        self.assertIsNone(body["error"])
+        self.assertEqual({m["name"]: m["enabled"] for m in body["modules"]}, {"Amasty_Base": False, "Magento_Store": True})
+        code, body, _ = self.dash.request("POST", "/api/environments/stack-b/actions/module_enable", {"modules": ["Amasty_Base"]})
+        self.assertEqual(code, 202, body)
+        rec = self.wait_done(self.b, "stack-b", body["operation"])
+        self.assertEqual(rec["label"], "Enable Amasty_Base + build")
+        self.assertIn("bin/local/magento-module enable --build Amasty_Base\n", calls(self.b))
+        code, body, _ = self.dash.request("POST", "/api/environments/stack-b/actions/module_disable",
+                                          {"modules": ["Amasty_Base", "Magento_Store"], "build": False})
+        self.assertEqual(code, 202, body)
+        rec = self.wait_done(self.b, "stack-b", body["operation"])
+        self.assertEqual(rec["label"], "Disable 2 modules")
+        self.assertIn("bin/local/magento-module disable Amasty_Base Magento_Store\n", calls(self.b))
+        for bad in ({}, {"modules": ["Not_There"]}, {"modules": ["Amasty_Base; rm -rf /"]}, {"modules": "Amasty_Base"},
+                    {"modules": ["Amasty_Base"], "build": "no"}, {"modules": ["X_Y%d" % i for i in range(101)]}):
+            code, _, _ = self.dash.request("POST", "/api/environments/stack-b/actions/module_enable", bad)
+            self.assertEqual(code, 400, bad)
+
+    def test_module_updates(self):
+        md = os.path.join(os.path.dirname(self.b), "magento")
+        helpers.write(os.path.join(md, "app", "etc", "config.php"),
+                      "<?php\nreturn [\n    'modules' => [\n        'Amasty_Base' => 1,\n    ],\n];\n")
+        helpers.write(os.path.join(md, "vendor", "amasty", "base", "etc", "module.xml"),
+                      '<config><module name="Amasty_Base"/></config>')
+        helpers.write(os.path.join(md, "vendor", "amasty", "base", "composer.json"), '{"name": "amasty/base"}')
+        helpers.write(os.path.join(md, "composer.json"), '{"require": {"amasty/base": "^1.17"}}')
+        helpers.write(os.path.join(md, "composer.lock"), '{"packages": [{"name": "amasty/base", "version": "1.18.0"}]}')
+        code, body, _ = self.dash.request("POST", "/api/environments/stack-b/actions/module_check_updates", {})
+        self.assertEqual(code, 202, body)
+        self.wait_done(self.b, "stack-b", body["operation"])
+        self.assertIn("bin/local/magento-module check-updates\n", calls(self.b))
+        # Before a check, nothing can be updated.
+        code, _, _ = self.dash.request("POST", "/api/environments/stack-b/actions/module_update", {"packages": ["amasty/base"]})
+        self.assertEqual(code, 400)
+        helpers.write(os.path.join(self.b, "logs", "module-updates.json"), json.dumps({
+            "checkedAt": "2026-10-10T10:00:00Z", "exitCode": 0, "error": None,
+            "packages": {"amasty/base": {"version": "1.18.0", "latest": "2.0.0", "latestStatus": "update-possible"}}}))
+        code, body, _ = self.dash.request("GET", "/api/environments/stack-b/modules")
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["modules"][0]["update"]["status"], "update-available")
+        self.assertTrue(body["updates"]["ok"])
+        code, body, _ = self.dash.request("POST", "/api/environments/stack-b/actions/module_update",
+                                          {"packages": ["amasty/base"], "dryRun": True})
+        self.assertEqual(code, 202, body)
+        rec = self.wait_done(self.b, "stack-b", body["operation"])
+        self.assertEqual(rec["label"], "Dry run: update amasty/base")
+        self.assertIn("bin/local/magento-module update --dry-run amasty/base:^2.0.0\n", calls(self.b))
+        code, body, _ = self.dash.request("POST", "/api/environments/stack-b/actions/module_update",
+                                          {"packages": ["amasty/base"], "build": False})
+        self.assertEqual(code, 202, body)
+        rec = self.wait_done(self.b, "stack-b", body["operation"])
+        self.assertEqual(rec["label"], "Update amasty/base")
+        self.assertIn("bin/local/magento-module update --no-build amasty/base:^2.0.0\n", calls(self.b))
+        for bad in ({"packages": ["magento/module-catalog"]}, {"packages": ["amasty/base"], "dryRun": "yes"},
+                    {"packages": ["amasty/base; rm"]}, {"packages": ["v/p%d" % i for i in range(101)]}):
+            code, _, _ = self.dash.request("POST", "/api/environments/stack-b/actions/module_update", bad)
+            self.assertEqual(code, 400, bad)
 
     def test_ownership_workflow(self):
         code, body, _ = self.dash.request("POST", "/api/environments/stack-b/workflows/ownership", {"model": "two-owner"})

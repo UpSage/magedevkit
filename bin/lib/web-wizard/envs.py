@@ -471,6 +471,8 @@ class Environment:
         sub, rest = args[0], list(args[1:])
         if sub in ("setup", "setup-wizard", "refresh-wizard", "version-wizard", "pipeline", "pipeline-wizard", "rebuild", "rebuild-wizard"):
             path = "bin/local/" + sub
+        elif sub in ("build", "module"):
+            path = "bin/local/magento-" + sub
         elif sub in ("mode", "ownership", "permissions"):
             path, rest = "bin/%s/%s" % (sub, rest[0]), rest[1:]
         else:

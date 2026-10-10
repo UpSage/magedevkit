@@ -17,21 +17,42 @@ file_sha256() {
 }
 
 # composer_check MODE [PACKAGE...] — the rules every composer entry point
-# shares (bin/local/magento-build, bin/local/rebuild, the dashboard's
-# ops.parse_composer): MODE is blank, install or update; packages look like
-# vendor/package and only go with update.
+# shares (bin/local/magento-build, bin/local/rebuild, bin/local/magento-module,
+# the dashboard's ops.parse_composer / modules.update_specs): MODE is blank,
+# install, update or require; packages look like vendor/package and only go
+# with update; require (the Modules tab's updates) takes one or more
+# vendor/package:constraint.
 COMPOSER_PACKAGE_RE='^[a-z0-9][a-z0-9._-]*/[a-z0-9*][a-z0-9._*-]*$'
+COMPOSER_SPEC_RE='^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*:[A-Za-z0-9.*^~|<>=!@ ,_-]+$'
 composer_check() {
     local mode="$1" p
     shift
     case "$mode" in
         ""|install|update) ;;
-        *) fail "composer takes install or update (got '$mode')." ;;
+        require)
+            [ "$#" -gt 0 ] || fail "composer require needs vendor/package:constraint."
+            for p in "$@"; do
+                [[ "$p" =~ $COMPOSER_SPEC_RE ]] || fail "'$p' isn't vendor/package:constraint."
+            done
+            return 0 ;;
+        *) fail "composer takes install, update or require (got '$mode')." ;;
     esac
     for p in "$@"; do
         [[ "$p" =~ $COMPOSER_PACKAGE_RE ]] || fail "'$p' isn't a vendor/package name."
     done
     [ "$#" -eq 0 ] || [ "$mode" = update ] || fail "Package names only go with composer update."
+}
+
+# module_check MODULE... — Magento module names (Vendor_Module; a lowercase
+# vendor exists too: dotdigitalgroup_Email), at least one. The dashboard uses
+# the same rule (ops.MODULE_RE).
+MODULE_NAME_RE='^[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9]+$'
+module_check() {
+    local m
+    [ "$#" -gt 0 ] || fail "Name at least one module (Vendor_Module)."
+    for m in "$@"; do
+        [[ "$m" =~ $MODULE_NAME_RE ]] || fail "'$m' isn't a module name (Vendor_Module)."
+    done
 }
 
 # Instance / project names (APP_NAME, the instance folder): Docker's project

@@ -23,7 +23,8 @@ source "$PLATFORM_DIR/bin/lib/db-backup.sh"
 # sed_re_literal / sed_repl_literal
 # shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/env.sh"
-# detect_prod_urls / prod_urls_are_local — the dump's own store URLs
+# detect_prod_urls / prod_urls_are_local / confirm_prod_urls — the dump's
+# own store URLs
 # shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/prod-urls.sh"
 
@@ -97,15 +98,18 @@ log "Verified: .gz file is valid."
 ui_task_done
 
 # Which site the dump came from: read from the dump itself (its
-# core_config_data), not typed in — see bin/lib/prod-urls.sh.
+# core_config_data), not typed in — see bin/lib/prod-urls.sh. Then the
+# "from → to" check, before anything is backed up, dropped or saved.
 if [ "$APPLY_URL_REWRITE" = 1 ]; then
   ui_task_start "Reading the dump's store URLs"
   detect_prod_urls "$LOCAL_FILE"
+  ui_task_done
   if prod_urls_are_local; then
     log "✓ The dump already uses this site's domain ($APP_DOMAIN) — nothing to rewrite."
     APPLY_URL_REWRITE=0
+  else
+    confirm_prod_urls
   fi
-  ui_task_done
 fi
 
 STRIP_SED_SCRIPT=""

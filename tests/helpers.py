@@ -66,7 +66,8 @@ def make_checkout(root, project, app_name, domain, extra_env="", with_launch=Tru
                 "bin/mode/default", "bin/mode/production"):
         write(os.path.join(pd, rel), RECORDER, 0o755)
     # bin/mode/* sit one level deeper: point their calls.log at the same file
-    for rel in ("bin/mode/show", "bin/mode/developer", "bin/mode/default", "bin/mode/production", "bin/local/magento-build"):
+    for rel in ("bin/mode/show", "bin/mode/developer", "bin/mode/default", "bin/mode/production", "bin/local/magento-build",
+                "bin/local/magento-module"):
         write(os.path.join(pd, rel), RECORDER.replace('"$(dirname "$0")/../calls.log"', '"$(dirname "$0")/../../calls.log"'), 0o755)
     write(os.path.join(pd, "compose", "docker-compose.yml"), "name: ${APP_NAME:-app}-platform\n")
     write(os.path.join(pd, "env", ".env.local"),

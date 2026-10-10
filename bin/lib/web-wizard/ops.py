@@ -26,6 +26,7 @@ import webcore
 from destroy import destroy, destroy_check, destroy_status  # noqa: F401
 from envs import SERVICES, child_env  # noqa: F401
 from locks import acquire_lock, lock_path, probe_lock  # noqa: F401
+from modules import parse_modules, update_specs
 from oplogs import Redactor, tail_file  # noqa: F401
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -72,6 +73,20 @@ ACTIONS = {
                         "confirm": "Updates packages to the newest versions composer.json allows and rewrites composer.lock. "
                                    "Test the store afterwards, then commit composer.lock in magento/. "
                                    "Upgrading Magento itself belongs to the version wizard."},
+    # bin/local/magento-module: module:enable|disable --clear-static-content
+    # (never --force), with `build` the Magento-only build around it.
+    "module_enable": {"label": "Enable modules", "argv": ["bin/local/magento-module", "enable"], "mutating": True,
+                      "arg": "modules"},
+    "module_disable": {"label": "Disable modules", "argv": ["bin/local/magento-module", "disable"], "mutating": True,
+                       "arg": "modules"},
+    # composer outdated --direct --all → logs/module-updates.json. Locked:
+    # it uses Composer's cache and the network, so it never overlaps an update.
+    "module_check_updates": {"label": "Check for module updates", "argv": ["bin/local/magento-module", "check-updates"],
+                             "mutating": True},
+    # composer require --update-with-dependencies for the chosen packages
+    # (modules.update_specs), as a dry run or followed by the build.
+    "module_update": {"label": "Update packages", "argv": ["bin/local/magento-module", "update"], "mutating": True,
+                      "arg": "update"},
 }
 
 WORKFLOWS = {
@@ -307,6 +322,26 @@ def run_action(e, name, body, all_envs):
         if mode:
             argv += ["--composer", mode] + pkgs
             label = "composer %s%s + build" % (mode, " " + " ".join(pkgs) if pkgs else "")
+    elif spec.get("arg") == "modules":
+        mods = parse_modules(e, body)
+        build = (body or {}).get("build", True)
+        if not isinstance(build, bool):
+            raise OpError(400, "build must be true or false.")
+        if not build and e.production:
+            raise OpError(400, "In production mode a module change needs the build too (the code is locked and compiled).")
+        argv += (["--build"] if build else []) + mods
+        label = "%s %s%s" % (label.split()[0], mods[0] if len(mods) == 1 else "%d modules" % len(mods),
+                             " + build" if build else "")
+    elif spec.get("arg") == "update":
+        dry, build = (body or {}).get("dryRun", False), (body or {}).get("build", True)
+        if not isinstance(dry, bool) or not isinstance(build, bool):
+            raise OpError(400, "dryRun and build must be true or false.")
+        if not dry and not build and e.production:
+            raise OpError(400, "In production mode an update needs the full build (di:compile and static content).")
+        specs = update_specs(e, body)
+        argv += (["--dry-run"] if dry else []) + ([] if dry or build else ["--no-build"]) + specs
+        what = specs[0].split(":")[0] if len(specs) == 1 else "%d packages" % len(specs)
+        label = "Dry run: update %s" % what if dry else "Update %s%s" % (what, " + build" if build else "")
     elif spec.get("arg") == "mode":
         mode = (body or {}).get("mode")
         if mode not in MODES:

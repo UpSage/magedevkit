@@ -40,6 +40,7 @@ if HERE not in sys.path:
 import envs  # noqa: E402
 import ops  # noqa: E402
 import gitrepo  # noqa: E402
+import modules  # noqa: E402
 import pipeline  # noqa: E402
 import webcore  # noqa: E402
 
@@ -52,6 +53,7 @@ STATIC = {
     "/dash-core.js": ("dash-core.js", "text/javascript; charset=utf-8"),
     "/dash-env.js": ("dash-env.js", "text/javascript; charset=utf-8"),
     "/dash-git.js": ("dash-git.js", "text/javascript; charset=utf-8"),
+    "/dash-modules.js": ("dash-modules.js", "text/javascript; charset=utf-8"),
     "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
     "/theme.js": ("theme.js", "text/javascript; charset=utf-8"),
     "/wizard.css": ("wizard.css", "text/css; charset=utf-8"),
@@ -261,6 +263,8 @@ def make_handler(dash, port):
                 return self.send(200, rec)
             if rest == "git":
                 return self.send(200, gitrepo.status(e))
+            if rest == "modules":
+                return self.send(200, modules.listing(e))
             if rest == "destroy-check":
                 return self.send(200, ops.destroy_check(e))
             if rest == "git/diff":

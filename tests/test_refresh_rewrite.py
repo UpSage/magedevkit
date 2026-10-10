@@ -5,6 +5,7 @@ database has only the local site's URLs. A fake bin/platform captures what
 would have been imported."""
 
 import gzip
+import json
 import os
 import shutil
 import subprocess
@@ -89,6 +90,55 @@ class RefreshRewrite(unittest.TestCase):
         self.assertIn("PROD_BASE_URL=https://shop.example.com/\n", env)
         self.assertIn("PROD_MEDIA_URL=https://cdn.example.com/media/\n", env)
         self.assertIn("PROD_COOKIE_DOMAIN=.example.com\n", env)
+        # Nobody to ask (no terminal, no page): the check is logged, not asked.
+        self.assertIn("Store URL: https://shop.example.com/ → https://shop.test/", out)
+        self.assertIn("Nobody to ask — going ahead", out)
+
+    def web(self, answer):
+        """The same refresh as answered on the wizard page: every event the
+        page would get is appended to events.log (ui_emit overwrites)."""
+        ui = os.path.join(self.d, "ui")
+        os.makedirs(ui)
+        helpers.write(os.path.join(ui, "answer"), answer + "\n")
+        body = "INSERT INTO `core_config_data` VALUES\n%s;\n%s" % (",\n".join(DUMP_ROWS), OTHER)
+        p, sql = self.refresh(body, extra="""
+            SETUP_UI=web SETUP_UI_DIR=%s
+            ui_emit() { printf '%%s\\n' "$1" >> "$SETUP_UI_DIR/events.log"; }""" % ui)
+        events = [json.loads(line) for line in helpers.read(os.path.join(ui, "events.log")).splitlines()]
+        asks = [e for e in events if e.get("t") == "ask"]
+        return p, sql, asks
+
+    def test_page_shows_the_rewrite_before_it_runs(self):
+        p, sql, asks = self.web("Y")
+        self.assertEqual(p.returncode, 0, p.stdout[-2000:] + p.stderr[-2000:])
+        self.assertEqual(len(asks), 1)
+        ask = asks[0]
+        self.assertEqual((ask["type"], ask["default"]), ("yesno", "Y"))
+        rows = dict(zip(ask["options"][1::2], ask["options"][0::2]))
+        self.assertEqual(rows["https://shop.example.com/ → https://shop.test/"], "Store URL")
+        self.assertEqual(rows["https://cdn.example.com/media/ → https://shop.test/media/"], "Media URL")
+        self.assertEqual(rows[".example.com → blank (uses each request host)"], "Cookie domain")
+        self.assertIn("Not rewritten", ask["options"])
+        self.assertNotIn("shop.example.com", sql)
+        self.assertIn("PROD_BASE_URL=https://shop.example.com/\n", helpers.read(self.env))
+
+    def test_no_at_the_check_changes_nothing(self):
+        before = helpers.read(self.env)
+        p, sql, asks = self.web("N")
+        self.assertEqual(p.returncode, 130, p.stdout[-2000:] + p.stderr[-2000:])
+        self.assertEqual(len(asks), 1)
+        self.assertIn("nothing was replaced", p.stdout + p.stderr)
+        self.assertEqual(sql, "")  # nothing imported
+        self.assertNotIn("mariadb", helpers.read(self.capture + ".calls") if os.path.exists(self.capture + ".calls") else "")
+        self.assertEqual(helpers.read(self.env), before)  # PROD_* not saved
+
+    def test_dump_summary_for_the_setup_review(self):
+        dump = os.path.join(self.d, "s.sql.gz")
+        with gzip.open(dump, "wt") as f:
+            f.write("INSERT INTO `core_config_data` VALUES\n%s;\n" % ",\n".join(DUMP_ROWS))
+        script = 'source %s/bin/lib/prod-urls.sh; dump_prod_summary "$1"' % self.repo
+        out = subprocess.run(["bash", "-c", script, "x", dump], capture_output=True, text=True, timeout=30).stdout
+        self.assertEqual(out, "https://shop.example.com/ (media https://cdn.example.com/media/; cookie domain .example.com)")
 
     def test_empty_cookie_domain_is_fine(self):
         rows = [r for r in DUMP_ROWS if "cookie" not in r and "websites" not in r]
@@ -102,6 +152,8 @@ class RefreshRewrite(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout[-2000:] + p.stderr[-2000:])
         self.assertIn("using the saved ones (https://stale.example.org/)", p.stdout + p.stderr)
         self.assertIn("https://shop.test/x", sql)
+        # Values that came from the env file aren't written back to it.
+        self.assertNotIn("PROD_MEDIA_URL", helpers.read(self.env))
 
     def test_no_urls_anywhere_and_nobody_to_ask_stops(self):
         helpers.write(self.env, "APP_NAME=shop\nAPP_DOMAIN=shop.test\n")

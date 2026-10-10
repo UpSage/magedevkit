@@ -1,4 +1,4 @@
-// MageDevKit dashboard, part 2 of 4: the overview and one environment's
+// MageDevKit dashboard, part 2 of 5: the overview and one environment's
 // page — Overview, Containers, Magento, Workflows, Pipeline, Logs and
 // Operations tabs. Uses dash-core.js; see its header for the load order.
 'use strict';
@@ -104,7 +104,7 @@ function renderEnvPage() {
   const tabs = Tabs({ items: TABS, value: S.route.tab, hrefFor: (id) => `#/env/${env.id}/${id}`, label: 'Environment sections' });
 
   const body = {
-    overview: OverviewTab, containers: ContainersTab, magento: MagentoTab, workflows: WorkflowsTab, pipeline: PipelineTab, git: GitTab,
+    overview: OverviewTab, containers: ContainersTab, magento: MagentoTab, modules: ModulesTab, workflows: WorkflowsTab, pipeline: PipelineTab, git: GitTab,
     logs: LogsTab, operations: OperationsTab,
   }[S.route.tab](env);
   setKids(contentSlot, h('div', { class: 'md:hidden' }, back), header, banners, WatchPanel(), h('div', { class: 'md:hidden' }, tabs), body);
