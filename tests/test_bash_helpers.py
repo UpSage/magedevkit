@@ -106,7 +106,7 @@ class ConfirmReplace(unittest.TestCase):
 
     def run_confirm(self, preset=None):
         engine = os.path.join(LIB, "sync-db-config-engine.sh")
-        script = ('source "%s/ui.sh"; cmd_hint() { echo "mrn refresh-wizard"; }; '
+        script = ('source "%s/ui.sh"; cmd_hint() { echo "mdk refresh-wizard"; }; '
                   'eval "$(sed -n \'/^confirm_replace() {/,/^}/p\' "%s")"; '
                   'MARIADB_DB=magento; confirm_replace && echo CONFIRMED') % (LIB, engine)
         env = {k: v for k, v in os.environ.items() if k not in ("SETUP_UI", "PRESET_REPLACE_CHOICE")}

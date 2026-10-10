@@ -1,9 +1,9 @@
-// MageRunner dashboard, part 1 of 4: state, helpers, polling, actions and the
+// MageDevKit dashboard, part 1 of 4: state, helpers, polling, actions and the
 // page shell. Loaded in order by dashboard.html — dash-core.js, dash-env.js,
 // dash-git.js, dashboard.js (boot) — as plain scripts sharing one global
 // scope; kit.js (DOM helpers, icons, shadcn/ui recipes) comes first.
 
-// MageRunner dashboard client — every checkout's status, actions and the
+// MageDevKit dashboard client — every checkout's status, actions and the
 // setup / refresh / version wizards. Talks to dashboard.py's JSON API; the
 // DOM helpers, icons and shadcn/ui recipes come from kit.js (shared with the
 // wizard). Vanilla JS, no dependencies. Tailwind classes must stay literal
@@ -458,7 +458,7 @@ function buildShell() {
   root.replaceChildren(AppShell({
     sidebar: sidebarSlot,
     main: [
-      PageHeader({ title: 'MageRunner', subtitle: 'Magento workbench · environments on this computer', href: '#/', width: '7xl', right: headRight, brandCls: 'md:hidden' }),
+      PageHeader({ title: 'MageDevKit', subtitle: 'Magento Developer Kit · environments on this computer', href: '#/', width: '7xl', right: headRight, brandCls: 'md:hidden' }),
       contentSlot,
       footerSlot,
     ],
@@ -471,7 +471,7 @@ function renderSidebar() {
   const openId = S.route.view === 'env' ? S.route.id : null;
   if (openId && !envs.some((e) => e.id === openId) && S.detail) envs.push(S.detail);
   setKids(sidebarSlot,
-    SidebarHeader({ title: 'MageRunner', subtitle: 'Magento workbench', href: '#/' }),
+    SidebarHeader({ title: 'MageDevKit', subtitle: 'Magento Developer Kit', href: '#/' }),
     SidebarGroup('Dashboard',
       SidebarItem({ href: '#/', iconName: 'layoutGrid', label: 'All environments', active: S.route.view !== 'env' })),
     SidebarGroup('Environments', envs.map((e) => [

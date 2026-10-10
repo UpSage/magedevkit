@@ -11,7 +11,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
 # else. The containers aren't stopped, restarted or recreated (that's the
 # full rebuild, bin/local/rebuild).
 #
-#   mrn build [--composer install|update [vendor/package ...]]
+#   mdk build [--composer install|update [vendor/package ...]]
 #
 #   [composer install | composer update [packages]]
 #   bin/magento maintenance:enable

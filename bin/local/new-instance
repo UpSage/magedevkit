@@ -12,8 +12,8 @@
 #   └── nginx/ certs/ logs/ db/    generated vhost, mkcert certificate, logs, backups
 #
 # An instance folder holds data only — no scripts. Commands for it go
-# through `mrn` (bin/mrn, installed with bin/local/install-mrn):
-#   cd ~/Sites/NAME && mrn magento cache:flush      or      mrn -i NAME platform up -d
+# through `mdk` (bin/mdk, installed with bin/local/install-mdk):
+#   cd ~/Sites/NAME && mdk magento cache:flush      or      mdk -i NAME platform up -d
 #
 # NAME becomes APP_NAME (Docker project NAME-platform, volumes NAME-*):
 # lowercase letters, digits, _ and -.
@@ -29,7 +29,7 @@
 set -euo pipefail
 
 PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# Run as `mrn new` from inside an instance, this still creates a *new* folder.
+# Run as `mdk new` from inside an instance, this still creates a *new* folder.
 unset PLATFORM_INSTANCE_DIR
 # shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/ui.sh"
@@ -79,7 +79,7 @@ NEW=0
 mkdir -p "$DIR"/{magento,nginx,certs,logs,db}
 cat > "$DIR/.platform-instance" <<EOF
 # Magento instance running on the shared platform repo below — see
-# bin/local/new-instance and bin/lib/paths.sh there. Commands: mrn (bin/mrn).
+# bin/local/new-instance and bin/lib/paths.sh there. Commands: mdk (bin/mdk).
 PLATFORM_REPO=$PLATFORM_DIR
 EOF
 
@@ -91,7 +91,7 @@ if [ ! -f "$DIR/.env" ]; then
     set_env_var "$DIR/.env" APP_DOMAIN "${NAME//_/-}.test"
 fi
 
-# Older versions put launcher scripts in <instance>/bin; mrn replaces them.
+# Older versions put launcher scripts in <instance>/bin; mdk replaces them.
 # Only files carrying their marker are removed — anything else stays.
 if [ -d "$DIR/bin" ]; then
     REMOVED=0
@@ -102,7 +102,7 @@ if [ -d "$DIR/bin" ]; then
         fi
     done < <(find "$DIR/bin" -type f -print0)
     find "$DIR/bin" -depth -type d -empty -delete 2>/dev/null || true
-    [ "$REMOVED" = 0 ] || log "Removed $REMOVED old bin/ launchers — use mrn instead (bin/local/install-mrn)."
+    [ "$REMOVED" = 0 ] || log "Removed $REMOVED old bin/ launchers — use mdk instead (bin/local/install-mdk)."
 fi
 
 if [ "$NEW" = 1 ]; then
@@ -114,7 +114,7 @@ fi
 export PLATFORM_INSTANCE_DIR="$DIR"
 case "$SETUP" in
     none)
-        log "Next: cd $DIR && mrn setup-wizard   (or: mrn -i $NAME setup-wizard)"
+        log "Next: cd $DIR && mdk setup-wizard   (or: mdk -i $NAME setup-wizard)"
         exit 0 ;;
     terminal) exec "$PLATFORM_DIR/bin/local/setup" ;;
     *) exec "$PLATFORM_DIR/bin/local/setup-wizard" "${WIZARD_ARGS[@]}" ;;

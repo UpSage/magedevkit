@@ -1,6 +1,6 @@
 # @@HEADER@@
 # Environment "@@ENV_NAME@@" of @@APP@@. Applied by the provision wizard
-# (mrn provision-wizard), never by the pipeline. Settings: terraform.tfvars.
+# (mdk provision-wizard), never by the pipeline. Settings: terraform.tfvars.
 
 terraform {
   required_version = ">= 1.6"

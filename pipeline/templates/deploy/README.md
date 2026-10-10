@@ -2,8 +2,8 @@
 # deploy/ — pipeline kit
 
 Everything needed to build this store and deploy it to an EC2 box. The
-pipeline wizard in MageRunner generates this folder
-(`mrn pipeline-wizard`); `deploy/pipeline.json` records which files it
+pipeline wizard in MageDevKit generates this folder
+(`mdk pipeline-wizard`); `deploy/pipeline.json` records which files it
 wrote, so the wizard notices hand edits and keeps them unless you choose to
 replace them.
 
@@ -35,7 +35,7 @@ replace them.
 | `docker/`, `config/` | images and service config: the same as the local instance's |
 | `compose/` | the stack on the box (`app.yml`) and its front door, Traefik with Let's Encrypt (`edge.yml`) |
 | `scripts/box` | operator commands on the box: status, maintenance, cache-flush, reindex, restart, seed-db |
-| `infra/` | Terraform for the AWS side. Applied by the provision wizard (`mrn provision-wizard`), never by the pipeline. |
+| `infra/` | Terraform for the AWS side. Applied by the provision wizard (`mdk provision-wizard`), never by the pipeline. |
 
 ## On the box
 

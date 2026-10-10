@@ -1,0 +1,59 @@
+#!/bin/bash
+# Installs the `mdk` command (MageDevKit, the Magento Developer Kit: one
+# command for every local instance) as a symlink in ~/.local/bin pointing at
+# this repo's bin/mdk. Also removes the links of its retired names (mr, mb,
+# m2w, mrn) when they point at a checkout of this repo. Safe to re-run;
+# re-run it if you move this repo: instances whose PLATFORM_REPO no longer
+# exists are re-pointed here (bin/local/new-instance refreshes their marker).
+set -euo pipefail
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$BIN_DIR"
+ln -sfn "$REPO/bin/mdk" "$BIN_DIR/mdk"
+echo "Installed: $BIN_DIR/mdk → $REPO/bin/mdk"
+for old in mr mb m2w mrn; do
+    target="$(readlink "$BIN_DIR/$old" 2>/dev/null || true)"
+    case "$target" in
+        */bin/mr|*/bin/mb|*/bin/m2w|*/bin/mrn)
+            rm -f "$BIN_DIR/$old"
+            echo "Removed the retired command: $BIN_DIR/$old" ;;
+    esac
+done
+
+# Instances next to this repo (or under PLATFORM_INSTANCES_ROOT, the same
+# root bin/local/new-instance uses) whose recorded repo is gone — the repo
+# was moved or renamed. One that points at another checkout that still
+# exists is left alone.
+# shellcheck disable=SC1091
+source "$REPO/bin/lib/env.sh"
+ROOT="${PLATFORM_INSTANCES_ROOT:-$(dirname "$REPO")}"
+MOVED=()
+for marker in "$ROOT"/*/.platform-instance; do
+    [ -f "$marker" ] || continue
+    dir="$(dirname "$marker")"
+    name="$(basename "$dir")"
+    recorded="$(env_get "$marker" PLATFORM_REPO)"
+    [ -n "$recorded" ] && [ -d "$recorded" ] && continue
+    if PLATFORM_INSTANCES_ROOT="$ROOT" "$REPO/bin/local/new-instance" "$name" --no-setup >/dev/null; then
+        echo "Re-pointed instance $name: ${recorded:-(none)} → $REPO"
+        MOVED+=("$name")
+    else
+        echo "⚠ Couldn't re-point instance $name — run: $REPO/bin/local/new-instance $name --no-setup" >&2
+    fi
+done
+if [ "${#MOVED[@]}" -gt 0 ]; then
+    # Running containers still bind-mount config files from the old path;
+    # recreating a stack is left to you, as everywhere else.
+    echo "Recreate their containers so they use the new path:"
+    for name in "${MOVED[@]}"; do echo "  mdk -i $name platform up -d"; done
+fi
+
+case ":$PATH:" in
+    *":$BIN_DIR:"*) echo "Try it: mdk list" ;;
+    *)
+        # shellcheck disable=SC1091
+        source "$REPO/bin/lib/tools.sh"
+        local_bin_on_path
+        echo "Added ~/.local/bin to PATH in ~/.bashrc — open a new terminal (or run: source ~/.bashrc), then: mdk list"
+        ;;
+esac

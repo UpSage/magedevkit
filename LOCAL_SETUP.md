@@ -1,8 +1,8 @@
-# Local Development Setup
+# Local Development Setup — MageDevKit (Magento Developer Kit)
 
-A from-scratch walkthrough for running a Magento 2 store on your own machine with MageRunner,
+A from-scratch walkthrough for running a Magento 2 store on your own machine with MageDevKit,
 written for someone who has never used this project. If WSL2, Docker and git are already set up,
-skip to [Step 4](#step-4-get-magerunner).
+skip to [Step 4](#step-4-get-magedevkit).
 
 For everything after the first store (the full command reference, the dashboard, Varnish, S3,
 modes and permissions, deploying), see [`README.md`](README.md).
@@ -11,8 +11,8 @@ modes and permissions, deploying), see [`README.md`](README.md).
 
 ```
 ~/Sites/
-├── magerunner/      ← MageRunner (this repo): the scripts, wizards and dashboard — no store data
-├── m249/            ← a store ("instance"): created by `mrn new m249`
+├── magedevkit/      ← MageDevKit (this repo): the scripts, wizards and dashboard — no store data
+├── m249/            ← a store ("instance"): created by `mdk new m249`
 │   ├── magento/     ← the store's code — its own git repo
 │   ├── .env         ← its settings (domain, ports, versions, mode, …)
 │   └── nginx/ certs/ logs/ db/
@@ -20,7 +20,7 @@ modes and permissions, deploying), see [`README.md`](README.md).
 ```
 
 Everything runs in Docker (Nginx, Varnish, PHP-FPM, MariaDB, Valkey, RabbitMQ, OpenSearch,
-Mailpit). You drive it with one command, `mrn` — never raw `docker compose` or `php bin/magento` on
+Mailpit). You drive it with one command, `mdk` — never raw `docker compose` or `php bin/magento` on
 your host.
 
 ## Prerequisites checklist
@@ -73,19 +73,19 @@ sudo apt update
 sudo apt install -y git curl python3
 ```
 
-## Step 4: Get MageRunner
+## Step 4: Get MageDevKit
 
 ```bash
 mkdir -p ~/Sites && cd ~/Sites
-git clone https://github.com/UpSage/magerunner.git
-cd magerunner
-bin/local/install-mrn          # puts the `mrn` command on your PATH (~/.local/bin)
+git clone https://github.com/UpSage/magedevkit.git
+cd magedevkit
+bin/local/install-mdk          # puts the `mdk` command on your PATH (~/.local/bin)
 ```
 
-Open a new terminal if `install-mrn` says it added `~/.local/bin` to your PATH, then check:
+Open a new terminal if `install-mdk` says it added `~/.local/bin` to your PATH, then check:
 
 ```bash
-mrn --version
+mdk --version
 ```
 
 Your stores are created **next to** this folder (`~/Sites/<name>`). Set `PLATFORM_INSTANCES_ROOT`
@@ -94,7 +94,7 @@ if you want them somewhere else.
 ## Step 5: Create your first store
 
 ```bash
-mrn new m249
+mdk new m249
 ```
 
 This creates `~/Sites/m249` and opens its **setup wizard** in your browser (add `--terminal` to
@@ -171,27 +171,27 @@ full-page cache for fresh downloads. For a cloned store, run:
 
 ```bash
 cd ~/Sites/m249
-mrn magento setup:config:set --http-cache-hosts="varnish:80" -n
-mrn magento cache:enable full_page
+mdk magento setup:config:set --http-cache-hosts="varnish:80" -n
+mdk magento cache:enable full_page
 ```
 
 ---
 
 ## Day-to-day commands
 
-Inside the store's folder (or from anywhere with `mrn -i m249 …`). Full reference in
+Inside the store's folder (or from anywhere with `mdk -i m249 …`). Full reference in
 [`README.md`'s "Day-to-day commands"](README.md#day-to-day-commands):
 
 ```bash
-mrn platform ps                    # container status
-mrn platform up -d                 # start the stack (after a reboot, Docker restart, …)
-mrn platform stop                  # stop it (containers and data are kept)
-mrn platform logs -f php           # tail one service's logs
+mdk platform ps                    # container status
+mdk platform up -d                 # start the stack (after a reboot, Docker restart, …)
+mdk platform stop                  # stop it (containers and data are kept)
+mdk platform logs -f php           # tail one service's logs
 
-mrn magento cache:flush            # any bin/magento command
-mrn build                          # after code/CSS/JS changes: setup:upgrade, compile, static, cache
-mrn refresh-wizard                 # replace the database from a new dump
-mrn dashboard                      # every store on this machine, in the browser
+mdk magento cache:flush            # any bin/magento command
+mdk build                          # after code/CSS/JS changes: setup:upgrade, compile, static, cache
+mdk refresh-wizard                 # replace the database from a new dump
+mdk dashboard                      # every store on this machine, in the browser
 ```
 
 ## Troubleshooting
@@ -200,8 +200,8 @@ mrn dashboard                      # every store on this machine, in the browser
 Docker Desktop isn't running, or WSL integration isn't on for your distro. Start Docker Desktop
 and check Settings → Resources → WSL Integration.
 
-**`mrn: command not found`**
-Open a new terminal (so `~/.local/bin` is on your PATH), or run `~/Sites/magerunner/bin/local/install-mrn`
+**`mdk: command not found`**
+Open a new terminal (so `~/.local/bin` is on your PATH), or run `~/Sites/magedevkit/bin/local/install-mdk`
 again.
 
 **The browser shows a certificate warning**
@@ -210,7 +210,7 @@ instead of **Local Machine**. Fully quit the browser and reopen it; redo Step 7 
 
 **The local domain doesn't resolve / times out**
 Check the hosts-file line saved (Notepad must run as Administrator) and matches the store's domain
-(`APP_DOMAIN` in its `.env`). Check `mrn platform ps` shows nginx running.
+(`APP_DOMAIN` in its `.env`). Check `mdk platform ps` shows nginx running.
 
 **Setup or a refresh failed partway**
 Run it again — every step skips what's already done. The wizard's **Run again** does the same. The
@@ -218,8 +218,8 @@ full log is in the store's `logs/` folder (`logs/setup-<date>.log`), and the das
 Operations tab lists every run.
 
 **A page 500s or shows a blank screen**
-`mrn platform logs php` for PHP errors, and Magento's own log:
-`mrn platform exec php tail -f var/log/exception.log`.
+`mdk platform logs php` for PHP errors, and Magento's own log:
+`mdk platform exec php tail -f var/log/exception.log`.
 
 **Push or fetch asks for a login again / "Authentication failed"**
 The token expired or lost access. On the dashboard's Git tab, **Forget** the saved login and

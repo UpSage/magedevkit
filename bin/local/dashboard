@@ -1,5 +1,5 @@
 #!/bin/bash
-# Opens the MageRunner dashboard: every platform checkout on this machine
+# Opens the MageDevKit dashboard: every platform checkout on this machine
 # (found from Docker and by scanning the folder that holds this checkout),
 # its containers and health, safe actions (start/stop/restart, cache,
 # reindex, mode, composer) and the setup / refresh / version wizards.
@@ -91,7 +91,7 @@ URL="$(state_field url)"
 
 cat <<MSG
 
-  MageRunner dashboard is running.
+  MageDevKit dashboard is running.
 
   Open:  $URL
 

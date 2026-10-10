@@ -1,4 +1,4 @@
-// MageRunner dashboard, part 4 of 4: boot. Runs after dash-core.js,
+// MageDevKit dashboard, part 4 of 4: boot. Runs after dash-core.js,
 // dash-env.js and dash-git.js have defined everything.
 'use strict';
 

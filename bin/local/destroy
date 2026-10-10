@@ -11,7 +11,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
 # .env, magento/ (the code, with any uncommitted or unpushed work), certs,
 # logs and the database backups/snapshots in db/. There is no undo.
 #
-#   mrn -i NAME destroy --yes        (or PLATFORM_INSTANCE_DIR=… bin/local/destroy --yes)
+#   mdk -i NAME destroy --yes        (or PLATFORM_INSTANCE_DIR=… bin/local/destroy --yes)
 #
 # Instances only: a legacy checkout is the platform repo itself and is never
 # deleted. The dashboard's Danger zone runs this after showing what would be

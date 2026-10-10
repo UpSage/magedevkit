@@ -32,7 +32,7 @@ if [ -n "${PLATFORM_INSTANCE_DIR:-}" ]; then
     INSTANCE_DIR="$(cd "$PLATFORM_INSTANCE_DIR" 2>/dev/null && pwd)" \
         || paths_fail "Instance folder $PLATFORM_INSTANCE_DIR not found."
     [ -f "$INSTANCE_DIR/.platform-instance" ] \
-        || paths_fail "$INSTANCE_DIR isn't an instance folder (no .platform-instance) — create one with: mrn new NAME"
+        || paths_fail "$INSTANCE_DIR isn't an instance folder (no .platform-instance) — create one with: mdk new NAME"
     PLATFORM_MODE=instance
     ENV_FILE="$INSTANCE_DIR/.env"
     MAGENTO_DIR="$INSTANCE_DIR/magento"
@@ -65,20 +65,20 @@ paths_is_shared_repo() {
 require_env_file() {
     [ -f "$ENV_FILE" ] && return 0
     if paths_is_shared_repo; then
-        paths_fail "This is the shared platform repo, not an instance — create one with: mrn new NAME — or run mrn inside an instance folder (or with -i NAME)."
+        paths_fail "This is the shared platform repo, not an instance — create one with: mdk new NAME — or run mdk inside an instance folder (or with -i NAME)."
     fi
     paths_fail "$ENV_NAME not found — set this instance up first: $(cmd_hint setup-wizard)"
 }
 
 # cmd_hint SUBCOMMAND [ARGS…] — the command a person should type for this
-# instance, for messages and finish screens. Instance: "mrn -i NAME …"
+# instance, for messages and finish screens. Instance: "mdk -i NAME …"
 # (works from any folder); legacy checkout: "cd <checkout> && bin/…".
 #   cmd_hint magento cache:flush | cmd_hint refresh-wizard | cmd_hint mode production
 cmd_hint() {
     local sub="$1"
     shift
     if [ "$PLATFORM_MODE" = instance ]; then
-        printf 'mrn -i %s %s' "$(basename "$INSTANCE_DIR")" "$sub${*:+ $*}"
+        printf 'mdk -i %s %s' "$(basename "$INSTANCE_DIR")" "$sub${*:+ $*}"
         return
     fi
     case "$sub" in

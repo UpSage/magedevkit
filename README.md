@@ -1,15 +1,15 @@
-# MageRunner
+# MageDevKit — Magento Developer Kit
 
-A Magento 2 workbench: Docker stacks for every local store, browser wizards (setup, refresh,
+A Magento 2 developer kit: Docker stacks for every local store, browser wizards (setup, refresh,
 version, build, pipeline), a dashboard with environments, builds and Git, and the EC2 deploy kit.
-The command is `mrn`.
+The command is `mdk`.
 
 Docker Compose configuration for a Magento 2 runtime, for **local development**. This
 repo controls the **infrastructure** the application runs on (Nginx, Varnish, PHP-FPM, MariaDB,
 Valkey, RabbitMQ, OpenSearch, Mailpit) — it does not contain the Magento application itself.
 
 **One repo, many stores.** This repo is the shared platform code. Each Magento store you run is
-an *instance*: its own folder next to the repo, created with `mrn new NAME` (or
+an *instance*: its own folder next to the repo, created with `mdk new NAME` (or
 **New instance** on the dashboard). The Magento code is either downloaded fresh or cloned from your
 project's repository. Editing a script here changes every instance at once. See "Instances" below.
 
@@ -24,7 +24,7 @@ model and the full command reference.
 
 ```
 ~/Sites/
-├── magerunner/                  ← this repo (MageRunner): the wizard + all platform code (bin/, compose/, docker/, m2/, …)
+├── magedevkit/                  ← this repo (MageDevKit): the wizard + all platform code (bin/, compose/, docker/, m2/, …)
 ├── m248p5/                      ← an instance (folder name = its APP_NAME) — local data only, no scripts
 │   ├── .platform-instance       marker: which platform repo runs it
 │   ├── .env                     its settings: APP_NAME, domain, ports, versions, mode, …
@@ -34,31 +34,31 @@ model and the full command reference.
 └── m249/                        ← another instance, same shape
 ```
 
-**One command for every instance: `mrn`.** Install it once (a symlink in `~/.local/bin`):
+**One command for every instance: `mdk`.** Install it once (a symlink in `~/.local/bin`):
 ```bash
-bin/local/install-mrn
+bin/local/install-mdk
 ```
 Then:
 ```bash
-mrn new m249                      # create ~/Sites/m249 and open its setup wizard (--terminal, --no-setup)
+mdk new m249                      # create ~/Sites/m249 and open its setup wizard (--terminal, --no-setup)
 cd ~/Sites/m249
-mrn magento cache:flush           # bin/magento in this instance's php container
-mrn composer install              # composer, likewise
-mrn platform up -d                # docker compose for this stack (ps, logs -f php, stop, …)
-mrn refresh-wizard                # or setup-wizard / version-wizard; terminal: setup / refresh / version
-mrn mode production               # also: ownership single|two-owner, permissions apply|lock|unlock
-mrn pipeline-wizard               # make magento/ pipeline-ready for an EC2 environment (see "Deploying to EC2")
-mrn build                         # Magento-only build: setup:upgrade, di:compile, static -f, cache:flush (maintenance on; containers untouched)
-mrn build --composer update vendor/pkg   # composer first, then the same build
-mrn rebuild-wizard                # full rebuild: also resets compiled code, restarts php/nginx/varnish, config, reindex
-mrn --version                     # the platform version (VERSION file, shown in every page's footer)
-mrn rebuild --composer update vendor/pkg   # composer first, then the full rebuild (terminal)
-mrn destroy --yes                 # delete the instance: containers, data volumes and its folder (no undo)
-mrn -i m249 magento indexer:status   # any command, from any folder, by instance name
-mrn list                          # instances
-mrn dashboard                     # all instances in the browser
+mdk magento cache:flush           # bin/magento in this instance's php container
+mdk composer install              # composer, likewise
+mdk platform up -d                # docker compose for this stack (ps, logs -f php, stop, …)
+mdk refresh-wizard                # or setup-wizard / version-wizard; terminal: setup / refresh / version
+mdk mode production               # also: ownership single|two-owner, permissions apply|lock|unlock
+mdk pipeline-wizard               # make magento/ pipeline-ready for an EC2 environment (see "Deploying to EC2")
+mdk build                         # Magento-only build: setup:upgrade, di:compile, static -f, cache:flush (maintenance on; containers untouched)
+mdk build --composer update vendor/pkg   # composer first, then the same build
+mdk rebuild-wizard                # full rebuild: also resets compiled code, restarts php/nginx/varnish, config, reindex
+mdk --version                     # the platform version (VERSION file, shown in every page's footer)
+mdk rebuild --composer update vendor/pkg   # composer first, then the full rebuild (terminal)
+mdk destroy --yes                 # delete the instance: containers, data volumes and its folder (no undo)
+mdk -i m249 magento indexer:status   # any command, from any folder, by instance name
+mdk list                          # instances
+mdk dashboard                     # all instances in the browser
 ```
-`mrn` picks the instance from `-i NAME`, otherwise from the folder you're in. It sets
+`mdk` picks the instance from `-i NAME`, otherwise from the folder you're in. It sets
 `PLATFORM_INSTANCE_DIR` and runs this repo's script, and `bin/lib/paths.sh` turns that into every
 path the scripts use.
 
@@ -72,8 +72,8 @@ path the scripts use.
   deployed.
 - **Instances live next to the repo** by default; set `PLATFORM_INSTANCES_ROOT` to use another
   folder. Running a command in the repo itself, with no instance chosen, is refused with a pointer
-  to `mrn new`.
-- **Removing an instance:** `mrn -i <name> destroy --yes`, or **Danger zone → Destroy instance** on
+  to `mdk new`.
+- **Removing an instance:** `mdk -i <name> destroy --yes`, or **Danger zone → Destroy instance** on
   the dashboard's Overview tab. It removes the containers, the data volumes and the whole folder.
   The dashboard first shows uncommitted or unpushed work in `magento/` and refuses to go on until
   you confirm it may be lost.
@@ -84,18 +84,18 @@ This repo — the shared platform code. It holds no store data; that lives in ea
 (see "Instances" above).
 
 ```
-magerunner/
+magedevkit/
 ├── bin/
-│   ├── mrn                 The one command for every instance (install: bin/local/install-mrn)
-│   ├── platform            docker compose for an instance's stack (mrn platform …)
+│   ├── mdk                 The one command for every instance (install: bin/local/install-mdk)
+│   ├── platform            docker compose for an instance's stack (mdk platform …)
 │   ├── magento, composer   bin/magento and composer inside its php container
 │   ├── refresh, version, sync-db     Dispatchers to the matching bin/local/ flow
-│   ├── sync-media-to-s3    Copies local pub/media to the S3 bucket (mrn sync-media)
+│   ├── sync-media-to-s3    Copies local pub/media to the S3 bucket (mdk sync-media)
 │   ├── remote-storage.sh   S3 defaults for the media sync
 │   ├── local/              Entry points
-│   │     terminal flows:   setup, refresh, version, sync-db, pipeline, rebuild, magento-build (mrn build)
+│   │     terminal flows:   setup, refresh, version, sync-db, pipeline, rebuild, magento-build (mdk build)
 │   │     browser wizards:  setup-wizard, refresh-wizard, version-wizard, pipeline-wizard, rebuild-wizard
-│   │     instances:        new-instance (mrn new), destroy, dashboard, install-mrn
+│   │     instances:        new-instance (mdk new), destroy, dashboard, install-mdk
 │   ├── mode/               default | developer | production | show
 │   ├── ownership/          single | two-owner
 │   ├── permissions/        apply | lock | unlock
@@ -127,7 +127,7 @@ magerunner/
 ├── pipeline/           The deploy kit the pipeline wizard writes into a store (templates/deploy/,
 │                       VERSION)
 ├── tests/              python3 -m unittest discover -s tests -t tests (see "Tests")
-├── VERSION             MageRunner's version, shown in every page's footer
+├── VERSION             MageDevKit's version, shown in every page's footer
 ├── README.md
 └── LOCAL_SETUP.md      From-scratch walkthrough (WSL2, Docker, first instance)
 ```
@@ -141,34 +141,34 @@ database backups and version snapshots (`<instance>/db/`), and the settings (`<i
 Inside an instance folder (or anywhere, with `-i NAME`):
 
 ```bash
-mrn platform ps                    # container status
-mrn platform up -d                 # start the stack
-mrn platform stop                  # stop it (keeps containers and data)
-mrn platform logs -f php           # tail logs for one service
-mrn platform exec php bash         # shell into a container
+mdk platform ps                    # container status
+mdk platform up -d                 # start the stack
+mdk platform stop                  # stop it (keeps containers and data)
+mdk platform logs -f php           # tail logs for one service
+mdk platform exec php bash         # shell into a container
 
-mrn magento cache:flush            # any bin/magento command, in the php container
-mrn magento setup:upgrade
-mrn composer require vendor/package
+mdk magento cache:flush            # any bin/magento command, in the php container
+mdk magento setup:upgrade
+mdk composer require vendor/package
 
-mrn build                          # code-only build: setup:upgrade, di:compile, static -f, cache:flush
-mrn rebuild-wizard                 # full rebuild (also resets compiled code, restarts php/nginx/varnish)
+mdk build                          # code-only build: setup:upgrade, di:compile, static -f, cache:flush
+mdk rebuild-wizard                 # full rebuild (also resets compiled code, restarts php/nginx/varnish)
 
-mrn setup-wizard                   # first-time setup, as a page in your browser
-mrn refresh-wizard                 # replace the database from a dump
-mrn version-wizard                 # upgrade Magento / roll back to a snapshot
-mrn pipeline-wizard                # write the deploy kit into magento/deploy/ (see "Deploying to EC2")
-mrn setup | refresh | version | pipeline | rebuild   # the same flows in the terminal
+mdk setup-wizard                   # first-time setup, as a page in your browser
+mdk refresh-wizard                 # replace the database from a dump
+mdk version-wizard                 # upgrade Magento / roll back to a snapshot
+mdk pipeline-wizard                # write the deploy kit into magento/deploy/ (see "Deploying to EC2")
+mdk setup | refresh | version | pipeline | rebuild   # the same flows in the terminal
 
-mrn dashboard                      # every instance on this machine (see "Dashboard")
+mdk dashboard                      # every instance on this machine (see "Dashboard")
 ```
 
 The wrappers always use the instance's `.env` and both compose files, and refuse to run (pointing at
-`mrn setup-wizard`) until that `.env` exists.
+`mdk setup-wizard`) until that `.env` exists.
 
-With `FILE_OWNERSHIP=single`, a bare `mrn platform exec php ...` (no `--user`) already runs as you —
-the same identity `mrn magento`/`mrn composer` use. With `two-owner` it runs as php-fpm's
-`www-data`; use `mrn magento`/`mrn composer` (or `--user "$(id -u):33"`) to act as yourself.
+With `FILE_OWNERSHIP=single`, a bare `mdk platform exec php ...` (no `--user`) already runs as you —
+the same identity `mdk magento`/`mdk composer` use. With `two-owner` it runs as php-fpm's
+`www-data`; use `mdk magento`/`mdk composer` (or `--user "$(id -u):33"`) to act as yourself.
 See "Magento mode & file permissions" below.
 
 ## Local development setup
@@ -181,8 +181,8 @@ Docker.
 
 **Create a store:**
 ```bash
-bin/local/install-mrn       # once: puts `mrn` on your PATH
-mrn new m249                # creates ~/Sites/m249 and opens its setup wizard in the browser
+bin/local/install-mdk       # once: puts `mdk` on your PATH
+mdk new m249                # creates ~/Sites/m249 and opens its setup wizard in the browser
                             # (--terminal: the same questions in the terminal)
 ```
 Setup is safe to re-run: every step skips itself when it's already done.
@@ -275,21 +275,21 @@ database:
    They're kept outside `magento/` until the download finishes (create-project needs an empty
    directory), then saved to `magento/auth.json`.
 3. The rest of the wizard runs as usual (project config, DB credentials, mode/ownership, TLS,
-   Docker). Skipped for a fresh install: the database import and the S3 data sync — `mrn refresh`
+   Docker). Skipped for a fresh install: the database import and the S3 data sync — `mdk refresh`
    isn't run.
 4. After the stack is up: `create-project` → `composer install` → **admin account prompts**
    (name, email, username, password — 7+ chars with letters and digits; the password is never
    saved) and a **Luma sample data** y/N question → `setup:install` → sample data (if chosen) →
    `m2/<version>/post-install` hooks →
-   the same Magento configuration `mrn refresh` applies (OpenSearch, Varnish FPC, storage, URL
-   overrides, admin path; shared via `bin/lib/magento-config-engine.sh`) → `mrn mode <mode>`.
+   the same Magento configuration `mdk refresh` applies (OpenSearch, Varnish FPC, storage, URL
+   overrides, admin path; shared via `bin/lib/magento-config-engine.sh`) → `mdk mode <mode>`.
 
 `magento/` must be empty (setup offers to clear it). The chosen package/version are recorded in
 `.env` (`MAGENTO_PACKAGE`, `MAGENTO_VERSION`).
 
 ### Refreshing local data
 
-**In the browser:** `mrn refresh-wizard` runs exactly what `mrn refresh` runs, as a
+**In the browser:** `mdk refresh-wizard` runs exactly what `mdk refresh` runs, as a
 step-by-step page: start the stack if it's stopped (the usual state after a reboot) → choose the dump
 (**upload** it, pick a file on this computer — Windows paths like `C:\Users\…\dump.sql.gz` work — or
 paste a URL) → the same questions as below → **type the project name** to confirm → a live checklist
@@ -300,12 +300,12 @@ of the import and rebuild → links to the site. See "Web wizards" below.
 before replacing it?", default yes — terminal and browser). To restore one, refresh from that file
 and answer **No** to "still contains production configuration".
 
-`mrn sync-db` runs only the database import; `mrn refresh` runs the import and then the full
+`mdk sync-db` runs only the database import; `mdk refresh` runs the import and then the full
 Magento rebuild. Both take the instance's lock, so they never overlap a setup, another refresh or
 a dashboard action. The work itself lives under `bin/lib/` (`sync-db-config-engine.sh`,
 `db-refresh-engine.sh`, `refresh-engine.sh`).
 
-- **`mrn sync-db`** asks, on every standalone run (setup answers these itself when it drives the
+- **`mdk sync-db`** asks, on every standalone run (setup answers these itself when it drives the
   import):
   - the **database source** — a local file path or an HTTP(S) URL (fetched with `curl`): a
     teammate's link, an RDS export, another project's dump. It's required: there's no default and no
@@ -314,10 +314,10 @@ a dashboard action. The work itself lives under `bin/lib/` (`sync-db-config-engi
   - whether the dump is a **copy of production** (its URLs are then rewritten, see below);
   - **this site's** domain and optional media/static URL overrides, written back to `.env`.
     Changing the domain here doesn't regenerate the certificate or `nginx/default.conf` — re-run
-    `mrn setup-wizard` for that;
+    `mdk setup-wizard` for that;
   - **media storage** (local disk or S3, defaulting to the current `REMOTE_STORAGE_DRIVER`) — S3
     goes through the same profile and bucket checks as setup, and the change reaches Magento in the
-    same `mrn refresh`;
+    same `mdk refresh`;
   - optional **tables whose data to strip** (comma-separated; table names only — letters, digits,
     `_`).
 
@@ -336,14 +336,14 @@ a dashboard action. The work itself lives under `bin/lib/` (`sync-db-config-engi
     nobody can answer.
   - A dump that already uses this site's domain is imported without rewriting.
   - Websites or store views with **their own URLs** (multi-site stores) are listed with a warning:
-    they keep their production values, and the log shows the `mrn magento config:set --scope=…`
+    they keep their production values, and the log shows the `mdk magento config:set --scope=…`
     command to point them at this site.
 - **Replacing the database always needs a yes.** On the refresh page you type the project name; in
   a terminal or on the setup page you answer the question. With nobody to answer (no terminal, no
   page) the run stops before anything is dropped — a script can confirm in advance with
   `PRESET_REPLACE_CHOICE=Y`. If the current database can't even be checked (DB down, wrong
   password), the run stops too: an error is never read as "the database is empty".
-- **`mrn refresh`** — the full local refresh pipeline: `composer install` → `sync-db` →
+- **`mdk refresh`** — the full local refresh pipeline: `composer install` → `sync-db` →
   repoint OpenSearch → reapply Varnish full-page-cache config (see below) → disable
   DB media storage → configure remote storage (see below) → `deploy:mode:set $MAGENTO_MODE` →
   `setup:upgrade` → `setup:di:compile` → `setup:static-content:deploy -f` → `indexer:reindex` →
@@ -352,7 +352,7 @@ a dashboard action. The work itself lives under `bin/lib/` (`sync-db-config-engi
 
 ### Switching Magento versions (upgrade / roll back)
 
-`mrn version` (terminal) or `mrn version-wizard` (browser) changes the installed Magento
+`mdk version` (terminal) or `mdk version-wizard` (browser) changes the installed Magento
 version — for a fresh install and an imported store alike. The current version is read from
 `magento/composer.lock` and recorded as `MAGENTO_VERSION` in `.env`.
 
@@ -361,7 +361,7 @@ version — for a fresh install and an imported store alike. The current version
   pins (PHP, MariaDB, OpenSearch, … — containers rebuilt when they change; a `config.platform.php`
   pin in composer.json moves along with PHP) → `composer require-commerce` (or `composer require`
   without the root-update plugin) `magento/product-<edition>-edition <version> --no-update` →
-  `composer update` → the same rebuild `mrn refresh` runs (`setup:upgrade`, compile, static deploy,
+  `composer update` → the same rebuild `mdk refresh` runs (`setup:upgrade`, compile, static deploy,
   reindex, maintenance off) → `m2/<version>/post-upgrade` hooks. If composer can't resolve the new
   version (usually a third-party extension that doesn't support it yet), composer.json/lock are put
   back and the database is untouched.
@@ -377,11 +377,11 @@ are kept (`VERSION_SNAPSHOTS_KEEP` in `.env` to change that). Any database chang
 after a snapshot are lost when you roll back to it.
 
 Without a terminal, preset the answers: `PRESET_VERSION_ACTION=upgrade PRESET_TARGET_VERSION=2.4.9
-mrn version`, or `PRESET_VERSION_ACTION=rollback PRESET_SNAPSHOT=<snapshot folder name> mrn version`.
+mdk version`, or `PRESET_VERSION_ACTION=rollback PRESET_SNAPSHOT=<snapshot folder name> mdk version`.
 
 ### Deploying to EC2 (pipeline kit)
 
-The **pipeline wizard** (`mrn pipeline-wizard`, or **Make pipeline-ready** on the dashboard's
+The **pipeline wizard** (`mdk pipeline-wizard`, or **Make pipeline-ready** on the dashboard's
 Pipeline tab) makes an instance's Magento repo deployable to an EC2 box. It asks for a target and
 writes the kit into the repo; you push it with the store.
 
@@ -432,13 +432,13 @@ How a deploy runs on AWS is described in the generated `magento/deploy/README.md
 
 ### S3-backed media (Remote Storage)
 
-`mrn refresh` configures Magento's `Magento_RemoteStorage` driver from `.env`'s
+`mdk refresh` configures Magento's `Magento_RemoteStorage` driver from `.env`'s
 `REMOTE_STORAGE_DRIVER` — `aws-s3` serves `pub/media` directly from the configured
 S3 bucket (`REMOTE_STORAGE_BUCKET`), via `setup:config:set --remote-storage-driver=aws-s3 ...`; `file`
 disables it and serves `pub/media` from local disk instead (the default when no bucket is set).
 There is no default bucket; region defaults to `us-east-2` (`bin/remote-storage.sh`);
 `REMOTE_STORAGE_KEY`/`REMOTE_STORAGE_SECRET` are always per-machine, from `.env`
-(never committed). `mrn setup` prompts for all of this once and remembers the answer on future
+(never committed). `mdk setup` prompts for all of this once and remembers the answer on future
 runs.
 
 ### Varnish full-page cache
@@ -460,15 +460,15 @@ Docker auto-assigns `up-network`; `ssl_offloaded_header` →
 
 **What configures it:**
 - **Database settings** (`system/full_page_cache/…`: Varnish as the cache, its access list,
-  backend `nginx:8080`, grace period) — applied by setup and reapplied by every `mrn refresh`
+  backend `nginx:8080`, grace period) — applied by setup and reapplied by every `mdk refresh`
   (`bin/lib/magento-config-engine.sh`), since a database import replaces them.
 - **Two `app/etc/env.php` settings** — where Magento sends PURGE requests
   (`--http-cache-hosts=varnish:80`; the admin's Varnish fields only feed "Export VCL") and the
   `full_page` cache type being on. Setup sets both for a **fresh download**. For a **cloned
   store**, run them once (an import never touches `env.php`, so they stay set):
   ```bash
-  mrn magento setup:config:set --http-cache-hosts="varnish:80" -n
-  mrn magento cache:enable full_page
+  mdk magento setup:config:set --http-cache-hosts="varnish:80" -n
+  mdk magento cache:enable full_page
   ```
 
 **Verify it's working:**
@@ -476,7 +476,7 @@ Docker auto-assigns `up-network`; `ssl_offloaded_header` →
 curl -Ik https://<APP_DOMAIN>/
 ```
 - First request: `X-Magento-Cache-Debug: MISS`. Second request to the same URL: `HIT`.
-- After `mrn magento cache:flush` (or saving a product/CMS page in admin), the next request
+- After `mdk magento cache:flush` (or saving a product/CMS page in admin), the next request
   should show `MISS` again — this confirms the live PHP → Varnish PURGE is actually reaching
   Varnish, not just clearing Magento's own cache pool.
 - `/static/` and `/media/` requests will show `X-Magento-Cache-Debug: UNCACHEABLE` — expected,
@@ -485,43 +485,43 @@ curl -Ik https://<APP_DOMAIN>/
 
 **Debugging:**
 ```bash
-mrn platform exec varnish varnishlog    # live request/cache-decision trace
-mrn platform exec varnish varnishstat   # hit/miss counters
-mrn platform exec varnish varnishadm backend.list   # confirm backend shows "healthy"
+mdk platform exec varnish varnishlog    # live request/cache-decision trace
+mdk platform exec varnish varnishstat   # hit/miss counters
+mdk platform exec varnish varnishadm backend.list   # confirm backend shows "healthy"
 ```
-If `backend.list` shows the backend as sick, check `mrn platform logs nginx` for
+If `backend.list` shows the backend as sick, check `mdk platform logs nginx` for
 `/health_check.php` requests returning non-200 — Varnish's backend probe hits that path on
 `nginx:8080` every 5s and marks the backend down after repeated failures.
 
 
 ### Magento mode & file permissions
 
-`mrn setup` asks two things on every run (current values as defaults), stored in
+`mdk setup` asks two things on every run (current values as defaults), stored in
 `.env`:
 
-1. **`MAGENTO_MODE`** — `default`, `developer`, or `production`. `mrn refresh` applies it
+1. **`MAGENTO_MODE`** — `default`, `developer`, or `production`. `mdk refresh` applies it
    (`deploy:mode:set`; production is set after compiling, via `--skip-compilation`). When setup runs
    without a data refresh it switches the mode itself.
 2. **`FILE_OWNERSHIP`** — who php-fpm runs as, per Adobe's
    [file-system-permissions guide](https://experienceleague.adobe.com/en/docs/commerce-operations/configuration-guide/deployment/file-system-permissions):
 
-| | php-fpm runs as | CLI (`mrn magento`, `mrn composer`, refresh) | Writable dirs (`var generated pub/static pub/media app/etc`) |
+| | php-fpm runs as | CLI (`mdk magento`, `mdk composer`, refresh) | Writable dirs (`var generated pub/static pub/media app/etc`) |
 |---|---|---|---|
 | `single` (default) | you (`$(id -u):$(id -g)`) | you | owned by you, `u+w` — Adobe's "one owner" |
 | `two-owner` | `www-data` (33:33) | you, group `www-data` (`$(id -u):33`) | `you:www-data`, dirs setgid `2770`/`2775`, files `660`/`664` — Adobe's "two owners" |
 
 `bin/lib/identity.sh` resolves this for every wrapper (it exports `PHP_UID`/`PHP_GID` for
 `docker-compose.local.yml`'s php `user:` and sets `EXEC_USER`), so switching models just needs
-`mrn platform up -d` to recreate php — setup does that. `two-owner` needs `sudo` once: setup adds you
+`mdk platform up -d` to recreate php — setup does that. `two-owner` needs `sudo` once: setup adds you
 to the host's `www-data` group (open a new shell, or `wsl --shutdown` from Windows, for your
 editor/shell to pick it up) and chowns the writable dirs. Magento's own bootstrap uses umask `002`,
 so files either side creates stay group-writable.
 
-**Production lock (both models).** In production mode, `mrn refresh` (and setup) end with
-`mrn permissions lock`: write access (`u-w` for single, `g-w` for two-owner) is removed from
+**Production lock (both models).** In production mode, `mdk refresh` (and setup) end with
+`mdk permissions lock`: write access (`u-w` for single, `g-w` for two-owner) is removed from
 everything except `var/`, `generated/`, `pub/media/` and `.git/`, then `var/view_preprocessed`,
 `generated/code` and `generated/metadata` are re-locked. `app/etc/env.php` always loses all
-"other" access. `mrn refresh` always runs `unlock` + `apply` first, so a locked tree never blocks it.
+"other" access. `mdk refresh` always runs `unlock` + `apply` first, so a locked tree never blocks it.
 
 #### Changing your mind later
 
@@ -529,17 +529,17 @@ Each choice has its own command — no need to re-run the whole setup, and every
 (it unlocks and restores ownership first, then re-locks only if the result is production):
 
 ```bash
-mrn mode show                 # configured vs. actual mode, and the ownership model
-mrn mode developer            # switch mode (also: mrn mode default, mrn mode production)
-mrn ownership two-owner       # switch ownership (also: mrn ownership single) — recreates php
-mrn permissions unlock        # make code writable (e.g. composer by hand in production mode)
-mrn permissions lock          # lock it again
-mrn permissions apply         # re-apply ownership/permissions for the current model
+mdk mode show                 # configured vs. actual mode, and the ownership model
+mdk mode developer            # switch mode (also: mdk mode default, mdk mode production)
+mdk ownership two-owner       # switch ownership (also: mdk ownership single) — recreates php
+mdk permissions unlock        # make code writable (e.g. composer by hand in production mode)
+mdk permissions lock          # lock it again
+mdk permissions apply         # re-apply ownership/permissions for the current model
 ```
 
 The logic lives in `bin/lib/mode-engine.sh` and `bin/lib/permissions-engine.sh`; the scripts in
 `bin/mode/`, `bin/ownership/` and `bin/permissions/` are one-line entry points. Switching mode by
-hand doesn't re-run a data refresh — `mrn mode production` uses Magento's own
+hand doesn't re-run a data refresh — `mdk mode production` uses Magento's own
 `deploy:mode:set production` (which compiles and deploys static content), then locks.
 
 ## Web wizards
@@ -549,11 +549,11 @@ shows the run as it happens:
 
 | Wizard | Command | Runs |
 |---|---|---|
-| Setup | `mrn setup-wizard` | `bin/local/setup` |
-| Refresh database | `mrn refresh-wizard` | `bin/local/refresh` |
-| Switch Magento version | `mrn version-wizard` | `bin/local/version` |
-| Make pipeline-ready | `mrn pipeline-wizard` | `bin/local/pipeline` |
-| Rebuild Magento | `mrn rebuild-wizard` | `bin/local/rebuild` |
+| Setup | `mdk setup-wizard` | `bin/local/setup` |
+| Refresh database | `mdk refresh-wizard` | `bin/local/refresh` |
+| Switch Magento version | `mdk version-wizard` | `bin/local/version` |
+| Make pipeline-ready | `mdk pipeline-wizard` | `bin/local/pipeline` |
+| Rebuild Magento | `mdk rebuild-wizard` | `bin/local/rebuild` |
 | Switch file ownership | dashboard → Magento → File ownership | `bin/ownership/<model>` (asks for the sudo password on the page) |
 
 Each page has numbered steps in the sidebar with a progress bar, one question at a time, a live
@@ -609,10 +609,10 @@ The page's DOM helpers, icons and component recipes live in `ui/kit.js`, shared 
 ## Dashboard
 
 ```bash
-mrn dashboard                 # opens http://127.0.0.1:<port>/?token=… in your browser
-mrn dashboard --no-browser    # print the link only
-mrn dashboard --port 8800     # fixed port (default: the one it used last time)
-mrn dashboard --scan ~/Sites --scan /srv/stores   # extra folders to look for instances in
+mdk dashboard                 # opens http://127.0.0.1:<port>/?token=… in your browser
+mdk dashboard --no-browser    # print the link only
+mdk dashboard --port 8800     # fixed port (default: the one it used last time)
+mdk dashboard --scan ~/Sites --scan /srv/stores   # extra folders to look for instances in
 ```
 
 One persistent page for **every instance on this machine**, laid out like
@@ -667,10 +667,10 @@ the sidebar. The platform version (the repo's `VERSION` file) is at the foot of 
     - the hosts-file line on Windows is left for you to remove;
   - **Operations**: history, running state, and Reopen/Cancel.
 
-It runs until Ctrl+C, and only one runs per user: running `mrn dashboard` again just prints the
+It runs until Ctrl+C, and only one runs per user: running `mdk dashboard` again just prints the
 existing link. Operations it started keep running after it stops.
 
-The terminal commands (`mrn setup`, `mrn refresh-wizard`, …) work exactly the same without it; the
+The terminal commands (`mdk setup`, `mdk refresh-wizard`, …) work exactly the same without it; the
 dashboard only calls them.
 
 ### How it works
@@ -700,7 +700,7 @@ browser ──> dashboard.py   (127.0.0.1 only; status + JSON API)
   - **A folder scan**, two levels deep, for environments with no containers yet. The default is
     the folder holding the repo (e.g. `~/Sites`); change it with `--scan`.
 
-  An instance is a folder with `.platform-instance` and `.env`. Its `APP_NAME` is its id: `mrn new`
+  An instance is a folder with `.platform-instance` and `.env`. Its `APP_NAME` is its id: `mdk new`
   and setup keep that unique. An instance whose `APP_NAME` doesn't match its folder name, or whose
   platform repo has gone, is listed read-only. Values come from its `.env`; anything that can't be
   determined is shown as **Unknown**.
@@ -890,19 +890,19 @@ Every instance (2.4.8, 2.4.9, …) can run at the same time; nothing is hardcode
 per machine:
 
 - **80/443** belong to a shared edge proxy, not to any stack — `compose/edge/docker-compose.yml`
-  (Traefik, compose project `platform-edge`), started automatically by `mrn platform up` and never
-  stopped by `mrn platform down`. It routes by hostname over the external `platform-edge` network to
+  (Traefik, compose project `platform-edge`), started automatically by `mdk platform up` and never
+  stopped by `mdk platform down`. It routes by hostname over the external `platform-edge` network to
   each stack's nginx: 443 is TLS passthrough on SNI (nginx still serves its own mkcert cert), 80 is
   plain HTTP on `Host`. So every site keeps a port-less `https://<APP_DOMAIN>/`, and each just needs
   its own `127.0.0.1 <APP_DOMAIN>` hosts-file line. Stop it with
   `docker compose -p platform-edge down` if you ever need 80/443 back.
 - **Network** — each stack's `up-network` gets a Docker-assigned subnet (no fixed CIDR).
 - **Debug ports** (`DB_PORT`, `VALKEY_PORT`, `RABBITMQ_*_PORT`, `OPENSEARCH_PORT`, `MAILPIT_*_PORT`)
-  — `mrn platform up` (`bin/lib/ports.sh`) keeps each value in the instance's `.env` unless another
+  — `mdk platform up` (`bin/lib/ports.sh`) keeps each value in the instance's `.env` unless another
   stack's container (running *or* stopped) or a host process holds it, in which case it moves to the
   next free port, saves it, and says so. Ports stay stable across restarts.
 - **Names** — compose project, volumes and images derive from `APP_NAME` (the instance name:
-  lowercase letters, digits, `_` and `-`, at most 40); `mrn new` and setup refuse a name or
+  lowercase letters, digits, `_` and `-`, at most 40); `mdk new` and setup refuse a name or
   `APP_DOMAIN` another stack already uses.
 
 If you ever run so many stacks that Docker runs out of networks ("could not find an available,
@@ -913,8 +913,8 @@ non-overlapping IPv4 address pool"), widen its pools in Docker Desktop → Setti
 
 | File | Committed? | Used by |
 |---|---|---|
-| `env/.env.local.example` (this repo) | Yes (no real values) | The template `mrn new` copies into each instance |
-| `<instance>/.env` | Never (outside any repo; 0600) | Every `mrn` command for that instance — required; they refuse to run without it. `PROD_*` are written by the DB refresh (read from the dump) |
+| `env/.env.local.example` (this repo) | Yes (no real values) | The template `mdk new` copies into each instance |
+| `<instance>/.env` | Never (outside any repo; 0600) | Every `mdk` command for that instance — required; they refuse to run without it. `PROD_*` are written by the DB refresh (read from the dump) |
 | `<instance>/.platform-instance` | Never | Marks the folder as an instance and names the platform repo that runs it |
 
 The env file is read with `env_get` and written with `set_env_var` (`bin/lib/env.sh`) — one
@@ -924,4 +924,26 @@ The env file is read with `env_get` and written with `set_env_var` (`bin/lib/env
 volume exists does **not** change the live MariaDB users — MariaDB only applies them when it first
 initializes the volume, and `app/etc/env.php` keeps its own copy. Either run the matching
 `ALTER USER ...` and update `env.php`'s `db.connection.default`, or start over with
-`mrn platform down -v` (deletes the database) and re-run `mrn setup-wizard`.
+`mdk platform down -v` (deletes the database) and re-run `mdk setup-wizard`.
+
+## Changelog
+
+### Unreleased (1.0.1)
+
+**Renamed: MageRunner is now MageDevKit (Magento Developer Kit), and the `mrn` command is now `mdk`.**
+Containers, volumes, data and instance settings are unchanged. To move an existing install:
+
+```bash
+mv ~/Sites/magerunner ~/Sites/magedevkit
+~/Sites/magedevkit/bin/local/install-mdk   # links mdk, removes the old mrn link, re-points your instances
+mdk -i NAME platform up -d                 # per instance: recreates its containers on the new path
+git -C ~/Sites/magedevkit remote set-url origin https://github.com/UpSage/magedevkit.git
+```
+
+`install-mdk` only re-points instances whose recorded repo folder no longer exists, and lists the
+`platform up -d` commands instead of running them. Pipeline kits generated before the rename keep
+their old header until the pipeline wizard regenerates them; nothing else reads it.
+
+---
+
+Magento is a trademark of Adobe Inc. MageDevKit is an independent, unofficial project.

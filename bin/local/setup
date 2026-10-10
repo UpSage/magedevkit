@@ -17,7 +17,7 @@ source "$PLATFORM_DIR/bin/lib/tools.sh"
 # "is this already done?" before acting. Covers LOCAL_SETUP.md steps 5-17.
 
 # The shared platform repo isn't a store — instances are made with new-instance.
-paths_is_shared_repo && fail "This is the shared platform repo, not an instance — create one with: mrn new NAME — or run mrn setup inside an instance folder (or with -i NAME)."
+paths_is_shared_repo && fail "This is the shared platform repo, not an instance — create one with: mdk new NAME — or run mdk setup inside an instance folder (or with -i NAME)."
 # EXEC_USER/PHP_UID/PHP_GID from FILE_OWNERSHIP — re-sourced by the engine
 # after its ownership prompt. See bin/lib/identity.sh.
 # shellcheck disable=SC1091

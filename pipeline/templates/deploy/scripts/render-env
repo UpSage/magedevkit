@@ -29,7 +29,7 @@ while IFS=$'\t' read -r name value; do
 done < <(aws ssm get-parameters-by-path --region "$AWS_REGION" --path "$prefix" --with-decryption \
     --query 'Parameters[].[Name,Value]' --output text)
 for k in db_password db_root_password rabbitmq_password crypt_key; do
-    [ -n "${SECRET[$k]:-}" ] || fail "SSM parameter $prefix$k is missing — run the provision wizard (mrn provision-wizard)."
+    [ -n "${SECRET[$k]:-}" ] || fail "SSM parameter $prefix$k is missing — run the provision wizard (mdk provision-wizard)."
 done
 
 mkdir -p "$SHARED" "$BACKUP_DIR"

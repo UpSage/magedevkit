@@ -14,10 +14,10 @@ const FLOW_TEXT = {
   setup: { name: 'Magento setup', verb: 'Setup', rerun: 'bin/local/setup-wizard' },
   refresh: { name: 'Database refresh', verb: 'Refresh', rerun: 'bin/local/refresh-wizard' },
   version: { name: 'Magento version', verb: 'Version switch', rerun: 'bin/local/version-wizard' },
-  ownership: { name: 'File ownership', verb: 'Ownership switch', rerun: 'mrn ownership single|two-owner' },
-  rebuild: { name: 'Magento rebuild', verb: 'Rebuild', rerun: 'mrn rebuild-wizard' },
+  ownership: { name: 'File ownership', verb: 'Ownership switch', rerun: 'mdk ownership single|two-owner' },
+  rebuild: { name: 'Magento rebuild', verb: 'Rebuild', rerun: 'mdk rebuild-wizard' },
   pipeline: {
-    name: 'Pipeline', verb: 'Pipeline kit', rerun: 'mrn pipeline-wizard',
+    name: 'Pipeline', verb: 'Pipeline kit', rerun: 'mdk pipeline-wizard',
     review: 'Check everything below. Nothing is written until you continue; the kit goes into magento/deploy/ and is committed on a new local branch — nothing is pushed.',
   },
 };
@@ -231,7 +231,7 @@ function buildShell() {
     sidebar: railSlot,
     main: [
       PageHeader({
-        title: `${ft.name} wizard`, titleId: 'flow-name', subtitle: 'MageRunner · running on this computer only', width: '4xl', brandCls: 'md:hidden',
+        title: `${ft.name} wizard`, titleId: 'flow-name', subtitle: 'MageDevKit · running on this computer only', width: '4xl', brandCls: 'md:hidden',
         right: h('div', { class: 'ml-auto flex items-center gap-2', id: 'head-right' }),
       }),
       h('main', { class: 'mx-auto min-w-0 max-w-4xl space-y-4 px-4 py-6' }, headSlot, bannerSlot, mainSlot, logCard),
@@ -283,7 +283,7 @@ function renderRail() {
     muted: s.status === 'upcoming' || s.status === 'skipped', strike: s.status === 'skipped',
   }))) : null;
   railSlot.replaceChildren(...[
-    SidebarHeader({ title: `${ft.name} wizard`, subtitle: 'MageRunner · running on this computer only' }),
+    SidebarHeader({ title: `${ft.name} wizard`, subtitle: 'MageDevKit · running on this computer only' }),
     steps,
     PageFooter(version, { sidebar: true }),
   ].filter(Boolean));

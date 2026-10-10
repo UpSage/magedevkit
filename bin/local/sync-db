@@ -6,7 +6,7 @@ set -o pipefail
 # shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
 
-# The DB import's entry point (mrn sync-db). The questions (dump source,
+# The DB import's entry point (mdk sync-db). The questions (dump source,
 # local URLs, storage driver) live in bin/lib/sync-db-config-engine.sh, the
 # import itself in bin/lib/db-refresh-engine.sh (which reads the production
 # URLs from the dump: bin/lib/prod-urls.sh). This file supplies the lock and

@@ -467,7 +467,7 @@ class Environment:
     def cmd_hint(self, *args):
         """What to type in a terminal for this environment (see bin/lib/paths.sh cmd_hint)."""
         if self.is_instance:
-            return "mrn -i %s %s" % (os.path.basename(self.platform_dir), " ".join(args))
+            return "mdk -i %s %s" % (os.path.basename(self.platform_dir), " ".join(args))
         sub, rest = args[0], list(args[1:])
         if sub in ("setup", "setup-wizard", "refresh-wizard", "version-wizard", "pipeline", "pipeline-wizard", "rebuild", "rebuild-wizard"):
             path = "bin/local/" + sub

@@ -229,7 +229,7 @@ function SidebarItem({ href, iconName, lead, label, active, nested, badge, curre
 function PageFooter(version, { sidebar, cls } = {}) {
   return h('footer', {
     class: cn('border-t px-4 py-4 text-xs', sidebar ? 'mt-auto border-sidebar-border text-sidebar-foreground' : 'text-muted-foreground', cls),
-  }, `MageRunner v${version || '?'} · Magento workbench`);
+  }, `MageDevKit v${version || '?'} · Magento Developer Kit`);
 }
 
 // Drag and drop between DropZones. Each kind of item gets its own

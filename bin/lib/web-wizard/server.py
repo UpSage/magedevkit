@@ -107,7 +107,7 @@ class Wizard:
         self.record_extra = {}
         # What to type to start this wizard again (shown on the stopped page).
         if os.path.isfile(os.path.join(platform_dir, ".platform-instance")):
-            self.rerun_command = "mrn -i %s %s-wizard" % (os.path.basename(platform_dir), flow)
+            self.rerun_command = "mdk -i %s %s-wizard" % (os.path.basename(platform_dir), flow)
         else:
             self.rerun_command = "cd %s && bin/local/%s-wizard" % (platform_dir, flow)
 
@@ -634,7 +634,7 @@ def rerun_hint(platform_dir, script):
     wizard of its own to re-run): bin/ownership/<model>."""
     model = os.path.basename(script)
     if os.path.isfile(os.path.join(platform_dir, ".platform-instance")):
-        return "mrn -i %s ownership %s" % (os.path.basename(platform_dir), model)
+        return "mdk -i %s ownership %s" % (os.path.basename(platform_dir), model)
     return "cd %s && bin/ownership/%s" % (platform_dir, model)
 
 

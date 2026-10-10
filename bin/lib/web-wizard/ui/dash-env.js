@@ -1,4 +1,4 @@
-// MageRunner dashboard, part 2 of 4: the overview and one environment's
+// MageDevKit dashboard, part 2 of 4: the overview and one environment's
 // page — Overview, Containers, Magento, Workflows, Pipeline, Logs and
 // Operations tabs. Uses dash-core.js; see its header for the load order.
 'use strict';
@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------------------
 
 function renderOverview() {
-  document.title = 'MageRunner';
+  document.title = 'MageDevKit';
   const o = S.overview;
   if (!o) {
     setKids(contentSlot, ErrorBanner() || LoadingText('Looking for environments…'));
@@ -77,7 +77,7 @@ function renderEnvPage() {
     setKids(contentSlot, back, ErrorBanner() || LoadingText('Loading…'));
     return;
   }
-  document.title = `${env.name} — MageRunner`;
+  document.title = `${env.name} — MageDevKit`;
   const [stackText, stackVariant] = STACK_TEXT[env.docker.state] || ['Unknown', 'secondary'];
   const site = siteUrl(env);
   const ro = !!env.readonly;
