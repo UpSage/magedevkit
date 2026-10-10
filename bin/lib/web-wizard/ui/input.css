@@ -18,38 +18,41 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* shadcn/ui tokens, Magento Admin palette (backend _colors.less). Status,
- * primary and link colors are darkened (light) / lightened (dark) from the
- * admin values so text on card, background and their /15 tints passes
- * WCAG AA 4.5:1. */
+/* shadcn/ui tokens, MageDevKit palette: orange #F26322, charcoal #242424,
+ * soft gray #F7F7F7 and white, plus neutral greys between them. Buttons use
+ * a darker shade of the orange so white text passes WCAG AA; the exact orange
+ * stays on non-text accents (focus ring, sidebar bar). Status and link colors are
+ * kept apart from the brand colors so text on card, background and their /15
+ * tints passes AA 4.5:1. */
 :root {
   --radius: 0; /* square corners everywhere (only status dots and radio buttons stay round) */
-  --background: #f8f8f8;          /* admin page grey */
-  --foreground: #303030;          /* admin text */
+  --background: #f7f7f7;          /* soft gray */
+  --foreground: #242424;          /* charcoal */
   --card: #ffffff;
-  --card-foreground: #303030;
+  --card-foreground: #242424;
   --popover: #ffffff;
-  --popover-foreground: #303030;
-  --primary: #c94700;             /* phoenix #eb5202, darkened for white text */
+  --popover-foreground: #242424;
+  --primary: #c8470c;             /* orange #F26322 darkened for white text (4.8:1) */
   --primary-foreground: #ffffff;
-  --secondary: #e3e3e3;           /* admin secondary button */
-  --secondary-foreground: #514943;  /* brownie */
-  --muted: #f1f1f1;
-  --muted-foreground: #6b6b6b;
-  --accent: #f1ece9;
-  --accent-foreground: #41362f;   /* brownie, almost black */
-  --destructive: #c41c1c;         /* admin error #e22626 */
-  --success: #376b18;             /* admin success #79a22e */
-  --warning: #8f5300;             /* admin warning #c07600 */
-  --link: #006bb4;                /* admin link #007bdb */
+  --primary-hover: #a83b0a;       /* darker on hover, so contrast only goes up */
+  --secondary: #ebebeb;
+  --secondary-foreground: #242424;
+  --muted: #f0f0f0;
+  --muted-foreground: #5c5c5c;
+  --accent: #fdeee7;              /* orange tint */
+  --accent-foreground: #242424;
+  --destructive: #c41c1c;
+  --success: #376b18;
+  --warning: #8f5300;
+  --link: #006bb4;
   --border: #e3e3e3;
-  --input: #adadad;               /* admin input border */
-  --ring: #eb5202;                /* phoenix */
-  /* Sidebar: the Magento admin menu — the same in light and dark mode (so .dark
-     doesn't repeat these). */
-  --sidebar: #373330;
-  --sidebar-foreground: #d6d2cf;
-  --sidebar-accent: #514943;
+  --input: #adadad;
+  --ring: #f26322;
+  /* Sidebar: charcoal, the same in light and dark mode (so .dark doesn't
+     repeat these). */
+  --sidebar: #242424;
+  --sidebar-foreground: #d4d4d4;
+  --sidebar-accent: #383838;
   --sidebar-accent-foreground: #ffffff;
   --sidebar-primary: #f26322;   /* active-item bar (non-text) */
   --sidebar-border: rgb(255 255 255 / 10%);
@@ -58,23 +61,24 @@
 }
 
 .dark {
-  --background: #211d1b;          /* derived from admin menu #373330 */
-  --foreground: #f4f1ef;
-  --card: #2b2623;
-  --card-foreground: #f4f1ef;
-  --popover: #2b2623;
-  --popover-foreground: #f4f1ef;
-  --primary: #f26322;             /* Magento brand orange */
-  --primary-foreground: #211d1b;
-  --secondary: #3a3431;
-  --secondary-foreground: #f4f1ef;
-  --muted: #322c29;
-  --muted-foreground: #b5aca6;
-  --accent: #3a3431;
-  --accent-foreground: #f4f1ef;
+  --background: #242424;          /* charcoal */
+  --foreground: #ffffff;
+  --card: #2e2e2e;
+  --card-foreground: #ffffff;
+  --popover: #2e2e2e;
+  --popover-foreground: #ffffff;
+  --primary: #c8470c;
+  --primary-foreground: #ffffff;
+  --primary-hover: #a83b0a;
+  --secondary: #383838;
+  --secondary-foreground: #ffffff;
+  --muted: #333333;
+  --muted-foreground: #b3b3b3;
+  --accent: #383838;
+  --accent-foreground: #ffffff;
   --destructive: #ff8a80;
   --success: #8fbf45;
-  --warning: #ffbe0a;             /* admin notice */
+  --warning: #ffbe0a;
   --link: #5aaef0;
   --border: rgb(255 255 255 / 10%);
   --input: rgb(255 255 255 / 18%);
@@ -90,6 +94,7 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);

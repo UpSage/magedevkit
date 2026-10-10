@@ -445,8 +445,8 @@ async function loadDisk(env) {
 // Shell
 // ---------------------------------------------------------------------------
 
-// Magento-admin style shell: the dark sidebar (environments, and the open
-// one's sections) on md and up; below md the header shows the logo and the
+// The shell: the dark sidebar (environments, and the open
+// one's sections) on md and up; below md the header shows the title and the
 // environment page shows its sections as Tabs.
 let sidebarSlot = null;
 let footerSlot = null;

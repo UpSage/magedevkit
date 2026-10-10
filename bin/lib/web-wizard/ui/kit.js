@@ -100,30 +100,13 @@ function icon(name, cls) {
   return svg;
 }
 
-// Magento mark, shown in every page header.
-const LOGO_PATH = 'M144.852 90.67v172.192l-16.933 10.349-16.946-10.404V90.803l-43.878 27.016v147.255l60.824 37.217 61.339-37.482V117.725L144.852 90.67zM127.919 0L0 77.502v147.274l33.223 19.572V97.06l94.722-57.596 94.81 57.512.391.223-.042 146.929L256 224.776V77.502L127.919 0z';
-
-function Logo(cls) {
-  const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('viewBox', '-23.5 0 303 303');
-  svg.setAttribute('preserveAspectRatio', 'xMidYMid');
-  svg.setAttribute('role', 'img');
-  svg.setAttribute('aria-label', 'Magento');
-  svg.setAttribute('class', cn('size-8 shrink-0', cls));
-  const path = document.createElementNS(SVG_NS, 'path');
-  path.setAttribute('d', LOGO_PATH);
-  path.setAttribute('fill', '#EC6737');
-  svg.appendChild(path);
-  return svg;
-}
-
 // ---------------------------------------------------------------------------
 // shadcn/ui component recipes — the only place these class strings live
 // ---------------------------------------------------------------------------
 
 const BUTTON_BASE = 'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[color,box-shadow,background-color] disabled:pointer-events-none disabled:opacity-50 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 cursor-pointer';
 const BUTTON_VARIANTS = {
-  default: 'bg-primary text-primary-foreground shadow-xs hover:bg-primary/90',
+  default: 'bg-primary text-primary-foreground shadow-xs hover:bg-primary-hover',
   destructive: 'bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/60',
   outline: 'border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50',
   secondary: 'bg-secondary text-secondary-foreground shadow-xs hover:bg-secondary/80',
@@ -174,13 +157,13 @@ function ThemeToggle(onChange) {
 
 const PAGE_WIDTHS = { '4xl': 'max-w-4xl', '6xl': 'max-w-6xl', '7xl': 'max-w-7xl' };
 
-// The sticky page header: logo, title, optional subtitle, and a right-hand
-// slot (the caller's element, usually 'ml-auto flex items-center gap-2').
-// brandCls hides the logo + title where a Sidebar already shows them.
+// The sticky page header: title, optional subtitle, and a right-hand slot
+// (the caller's element, usually 'ml-auto flex items-center gap-2').
+// brandCls hides the title where a Sidebar already shows it.
 function PageHeader({ title, titleId, subtitle, href, width = '6xl', right, brandCls }) {
-  const brand = [Logo(cn(brandCls)), h('div', { class: cn('min-w-0', brandCls) },
+  const brand = h('div', { class: cn('min-w-0', brandCls) },
     h('div', { class: 'text-sm font-semibold leading-tight', id: titleId, text: title }),
-    subtitle ? h('div', { class: 'text-muted-foreground hidden truncate text-xs sm:block', text: subtitle }) : null)];
+    subtitle ? h('div', { class: 'text-muted-foreground hidden truncate text-xs sm:block', text: subtitle }) : null);
   // h-16 (border included) — the same height as SidebarHeader, so the two line up.
   return h('header', { class: 'sticky top-0 z-10 h-16 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80' },
     h('div', { class: cn('mx-auto flex h-full items-center gap-3 px-4', PAGE_WIDTHS[width]) },
@@ -199,7 +182,6 @@ function AppShell({ sidebar, main }) {
 function SidebarHeader({ title, subtitle, href }) {
   // h-16 like PageHeader, so the sidebar header and the page header line up.
   return h(href ? 'a' : 'div', { href, class: cn('flex h-16 shrink-0 items-center gap-3 border-b border-sidebar-border px-4', href ? 'outline-none focus-visible:ring-[3px] focus-visible:ring-sidebar-primary/60' : null) },
-    Logo(),
     h('div', { class: 'min-w-0' },
       h('div', { class: 'text-sm font-semibold leading-tight text-sidebar-accent-foreground', text: title }),
       subtitle ? h('div', { class: 'truncate text-xs', text: subtitle }) : null));
