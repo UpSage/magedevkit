@@ -110,8 +110,8 @@ async function run() {
 
   // Checkbox: the select-all "some selected" state.
   const mixed = Checkbox({ indeterminate: true }).querySelector('input');
-  check('Checkbox indeterminate', mixed.indeterminate === true && mixed.getAttribute('aria-checked') === 'mixed');
-  check('Checkbox plain', !Checkbox({ checked: true }).querySelector('input').hasAttribute('aria-checked'));
+  check('Checkbox indeterminate', mixed.indeterminate === true && !mixed.hasAttribute('aria-checked'));
+  check('Checkbox plain', Checkbox({ checked: true }).querySelector('input').indeterminate === false);
   const bar = SelectionBar('3 selected', Button({ label: 'Go' }));
   check('SelectionBar', bar.getAttribute('role') === 'toolbar' && bar.textContent.includes('3 selected') && bar.querySelector('button'));
 

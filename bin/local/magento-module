@@ -10,7 +10,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
 #
 #   mdk module enable|disable [--build] Vendor_Module ...
 #   mdk module check-updates
-#   mdk module update [--dry-run] [--no-build] vendor/package:constraint ...
+#   mdk module update [--dry-run] [--quick] vendor/package:constraint ...
 #
 # enable / disable: bin/magento module:enable|disable --clear-static-content,
 # never with --force — Magento's own dependency check still refuses a change
@@ -30,17 +30,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
 # packages (and their own dependencies), then the build (mdk build --composer
 # require …), which puts composer.json and composer.lock back if composer
 # fails. --dry-run only resolves — composer checks PHP, Magento and every
-# conflict and changes nothing. --no-build (developer/default mode) runs
-# setup:upgrade and cache:flush instead of the full build.
-
-php_running() {
-    "$PLATFORM_DIR/bin/platform" ps --status running --services 2>/dev/null | grep -qx php \
-        || fail "The php container isn't running — start the environment first."
-}
+# conflict and changes nothing. --quick (developer/default mode) runs
+# setup:upgrade and cache:flush instead of the full build (mdk build --quick).
 
 case "${1:-}" in
-    enable|disable) OP="$1"; shift ;;
-    check-updates|update) OP="$1"; shift ;;
+    enable|disable|check-updates|update) OP="$1"; shift ;;
     -h|--help) script_help "$0"; exit 0 ;;
     *) fail "Expected enable, disable, check-updates or update (got '${1:-nothing}') — e.g. $(cmd_hint module enable --build Vendor_Module)" ;;
 esac
@@ -49,10 +43,11 @@ if [ "$OP" = check-updates ]; then
     [ "$#" -eq 0 ] || fail "check-updates takes no arguments."
     require_env_file
     wizard_lock
-    php_running
-    OUT="$(mktemp)"
-    ERR="$(mktemp)"
-    trap 'rm -f "$OUT" "$ERR"' EXIT
+    require_php_running
+    TMP="$(mktemp -d)"
+    trap 'rm -rf "$TMP"' EXIT
+    OUT="$TMP/out.json"
+    ERR="$TMP/err.txt"
     printf '\n→ %s\n' "composer outdated --direct --all --format=json"
     RC=0
     "$PLATFORM_DIR/bin/composer" outdated --direct --all --format=json --no-interaction > "$OUT" 2> "$ERR" || RC=$?
@@ -92,29 +87,29 @@ fi
 
 if [ "$OP" = update ]; then
     DRY=0
-    BUILD=1
+    QUICK=()
     while [ $# -gt 0 ]; do
         case "$1" in
             --dry-run) DRY=1; shift ;;
-            --no-build) BUILD=0; shift ;;
+            --quick) QUICK=(--quick); shift ;;
             *) break ;;
         esac
     done
     composer_check require "$@"
     if [ "$DRY" = 0 ]; then
-        if [ "$BUILD" = 1 ]; then
-            exec "$(dirname "${BASH_SOURCE[0]}")/magento-build" --composer require "$@"
-        fi
-        exec "$(dirname "${BASH_SOURCE[0]}")/magento-build" --quick --composer require "$@"
+        exec "$(dirname "${BASH_SOURCE[0]}")/magento-build" "${QUICK[@]}" --composer require "$@"
     fi
     require_env_file
     wizard_lock
-    php_running
+    require_php_running
     # composer require refuses an unwritable composer.json even for a dry
     # run — in production mode the code is locked, so open it meanwhile.
+    relock() {
+        "$PLATFORM_DIR/bin/permissions/lock" >/dev/null 2>&1 || echo "⚠ Couldn't lock the code again — run: $(cmd_hint permissions lock)"
+    }
     if [ "$(env_get "$ENV_FILE" MAGENTO_MODE)" = production ]; then
         "$PLATFORM_DIR/bin/permissions/unlock"
-        trap '"$PLATFORM_DIR/bin/permissions/lock" >/dev/null 2>&1 || echo "⚠ Couldn'"'"'t lock the code again — run: $(cmd_hint permissions lock)"' EXIT
+        trap relock EXIT
     fi
     printf '\n→ %s\n' "composer require --dry-run --update-with-dependencies $*"
     "$PLATFORM_DIR/bin/composer" require --dry-run --update-with-dependencies --no-interaction "$@"
@@ -138,7 +133,7 @@ require_env_file
 [ "$(env_get "$ENV_FILE" MAGENTO_MODE)" != production ] \
     || fail "In production mode a module change needs the build too (the code is locked and compiled) — add --build: $(cmd_hint module "$OP" --build "$@")"
 wizard_lock
-php_running
+require_php_running
 
 printf '\n→ %s\n' "module:$OP $*"
 "$MAGENTO" "module:$OP" --clear-static-content "$@"

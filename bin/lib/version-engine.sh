@@ -400,12 +400,10 @@ magento_rebuild
 # Version-specific commands from the m2 catalog (base, then patch) —
 # upgrades only; a rollback restores a state that already had them.
 if [ "$ACTION" = upgrade ]; then
-    for hook in "$M2_BASE_DIR/post-upgrade" "${M2_PATCH_DIR:+$M2_PATCH_DIR/post-upgrade}"; do
-        if [ -n "$hook" ] && [ -x "$hook" ]; then
-            ui_task "Running ${hook#"$PLATFORM_DIR/"}" \
-                env PLATFORM_DIR="$PLATFORM_DIR" MAGENTO_VERSION="$TARGET_VERSION" PREVIOUS_VERSION="$CURRENT_VERSION" "$hook"
-        fi
-    done
+    while IFS= read -r hook; do
+        ui_task "Running ${hook#"$PLATFORM_DIR/"}" \
+            env PLATFORM_DIR="$PLATFORM_DIR" MAGENTO_VERSION="$TARGET_VERSION" PREVIOUS_VERSION="$CURRENT_VERSION" "$hook"
+    done < <(m2_hooks post-upgrade)
 fi
 
 set_env_var "$ENV_FILE" MAGENTO_VERSION "$TARGET_VERSION"

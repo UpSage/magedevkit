@@ -32,6 +32,12 @@ const OP_BADGE = {
   cancelled: ['Cancelled', 'secondary'], interrupted: ['Interrupted', 'warning'],
 };
 
+// The Modules tab's filters on first load and per environment: third-party
+// modules, any status, no search.
+function modulesFilterDefault() {
+  return { q: '', status: 'all', source: 'third-party' };
+}
+
 const S = {
   route: { view: 'overview' },
   overview: null,
@@ -49,7 +55,7 @@ const S = {
   gitNeedsLogin: false,
   modules: null,      // GET …/modules — this environment's Magento modules
   modulesError: null,
-  modulesFilter: { q: '', status: 'all', source: 'third-party' },
+  modulesFilter: modulesFilterDefault(),
   modulesPage: 1,
   modulesSel: new Set(),  // selected module names (all pages)
 };
@@ -104,6 +110,11 @@ function dockerStatus(env) {
 // operation holds the instance lock.
 function envBlocked(env) {
   return !!env.readonly || S.busy || !!(env.lock && env.lock.held);
+}
+
+// Whether this environment's platform code has action `name` and may run it.
+function actionAvailable(env, name) {
+  return !env.readonly && !!env.actions[name] && !!env.actions[name].available;
 }
 
 function statusFor(env, key) {
@@ -204,7 +215,7 @@ window.addEventListener('hashchange', () => {
     S.git = null; S.gitError = null; S.gitDiff = null; S.gitNeedsLogin = false;
     S.gitSel = { staged: new Set(), changes: new Set() };
     gitMessage = null;
-    S.modules = null; S.modulesError = null; S.modulesFilter = { q: '', status: 'all', source: 'third-party' }; S.modulesPage = 1; S.modulesSel = new Set();
+    S.modules = null; S.modulesError = null; S.modulesFilter = modulesFilterDefault(); S.modulesPage = 1; S.modulesSel = new Set();
     modSearch = null;
   }
   render();

@@ -10,6 +10,7 @@ import stat
 import tempfile
 import unittest
 import urllib.error
+import urllib.request
 
 import helpers
 import releases
@@ -44,7 +45,7 @@ class Releases(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp(prefix="releases-")
         self.cat = os.path.join(self.d, "m2")
-        shutil.copytree(os.path.join(helpers.REPO, "m2"), self.cat)
+        helpers.write_catalog(self.cat)
         self.env = dict(os.environ)
         os.environ["XDG_CACHE_HOME"] = os.path.join(self.d, "cache")
         self.root = releases.cache_root()
@@ -91,6 +92,11 @@ class Releases(unittest.TestCase):
         self.assertIn("PHP 8.4 isn't in Adobe's list (8.5)", by["2.4.8-p7"]["note"])
         self.assertEqual(by["2.4.10"]["state"], "published")
         self.assertIn("No m2/ catalog line for 2.4.10", by["2.4.10"]["note"])
+        # Adobe's entry without the core services can't be checked: never derived.
+        r["2.4.8-p8"] = {"PHP": "8.4"}
+        p8 = {e["version"]: e for e in releases.derive(r, self.cat)}["2.4.8-p8"]
+        self.assertEqual(p8["state"], "published")
+        self.assertIn("Adobe lists no MariaDB", p8["note"])
         # A repo folder wins.
         helpers.write(os.path.join(self.cat, "2.4.8", "p6", "version.env"), "MAGENTO_VERSION=2.4.8-p6\n")
         self.assertEqual({e["version"]: e for e in releases.derive(r, self.cat)}["2.4.8-p6"]["state"], "catalog")
@@ -100,21 +106,22 @@ class Releases(unittest.TestCase):
         data, entries, note = releases.refresh(self.cat, fetch=fetch)
         self.assertEqual(len(calls), 1)
         self.assertIn("2.4.8-p6", note)
-        env = helpers.read(os.path.join(self.root, "m2", "2.4.8", "p6", "version.env"))
+        self.derived = releases.derived_dir(self.cat)
+        env = helpers.read(os.path.join(self.derived, "2.4.8", "p6", "version.env"))
         self.assertIn("# Derived from 2.4.8-p5", env)
         self.assertIn("MAGENTO_VERSION=2.4.8-p6\n", env)
         self.assertIn("NGINX_VERSION=1.30\n", env)
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.root, "releases.json")).st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(os.stat(self.root).st_mode), 0o700)
-        self.assertFalse([f for f in os.listdir(self.root) if f.startswith(("releases.", "m2."))
-                          and f != "releases.json"])  # no temp files left
+        self.assertEqual(sorted(f for f in os.listdir(self.root) if not f.startswith(".")),
+                         ["m2-" + os.path.basename(self.derived)[3:], "releases.json"])  # no temp files left
         # Fresh: --if-stale doesn't download; the next note is silent.
         _, _, note = releases.refresh(self.cat, if_stale=True, fetch=fetch)
         self.assertEqual((len(calls), note), (1, ""))
         # Once catalogued, the derived entry goes away.
         helpers.write(os.path.join(self.cat, "2.4.8", "p6", "version.env"), "MAGENTO_VERSION=2.4.8-p6\n")
         releases.refresh(self.cat, if_stale=True, fetch=fetch)
-        self.assertFalse(os.path.exists(os.path.join(self.root, "m2", "2.4.8", "p6")))
+        self.assertFalse(os.path.exists(os.path.join(self.derived, "2.4.8", "p6")))
 
     def test_offline_keeps_the_old_copy(self):
         releases.refresh(self.cat, fetch=self.fetch()[0])
@@ -124,7 +131,7 @@ class Releases(unittest.TestCase):
             data, entries, note = releases.refresh(self.cat, fetch=fetch)
             self.assertIn("Couldn't check Adobe", note, err)
             self.assertIn("2.4.8-p6", data["releases"], err)  # old data kept
-            self.assertTrue(os.path.exists(os.path.join(self.root, "m2", "2.4.8", "p6", "version.env")), err)
+            self.assertTrue(os.path.exists(os.path.join(releases.derived_dir(self.cat), "2.4.8", "p6", "version.env")), err)
         # Stale, but the last try failed within the hour: --if-stale doesn't wait on the network again.
         data = releases.load()
         data["fetchedAt"] = "2000-01-01T00:00:00Z"
@@ -138,35 +145,71 @@ class Releases(unittest.TestCase):
         data, entries, note = releases.refresh(self.cat, fetch=fetch)
         self.assertIn("using the m2/ catalog only", note)
         self.assertEqual({e["state"] for e in entries}, {"catalog"})
-        self.assertEqual(os.listdir(os.path.join(self.root, "m2")), [])
+        self.assertEqual(os.listdir(releases.derived_dir(self.cat)), [])
 
-    def test_too_big_is_refused(self):
+    def fake_opener(self, total, chunk=65536):
+        """build_opener() stand-in serving `total` bytes in `chunk`-sized reads."""
         class Resp:
-            def __init__(self, n):
-                self.n = n
-            def read(self, limit):
-                return b"x" * min(self.n, limit)
+            left = total
+            def read(self, n):
+                n = min(n, chunk, Resp.left)
+                Resp.left -= n
+                return b"x" * n
             def __enter__(self):
                 return self
             def __exit__(self, *a):
                 return False
-        real = releases.urllib.request.urlopen
-        releases.urllib.request.urlopen = lambda req, timeout: Resp(releases.MAX_BYTES + 10)
+
+        class Opener:
+            def open(self, req, timeout):
+                return Resp()
+        return lambda *handlers: Opener()
+
+    def test_too_big_is_refused(self):
+        real = releases.urllib.request.build_opener
+        releases.urllib.request.build_opener = self.fake_opener(releases.MAX_BYTES + 10)
         try:
             with self.assertRaises(ValueError):
                 releases.fetch_text()
         finally:
-            releases.urllib.request.urlopen = real
+            releases.urllib.request.build_opener = real
+
+    def test_slow_download_is_cut_off(self):
+        real, clock = releases.urllib.request.build_opener, releases.time.monotonic
+        releases.urllib.request.build_opener = self.fake_opener(1000, chunk=10)
+        ticks = iter(range(0, 1000, 5))
+        releases.time.monotonic = lambda: next(ticks)  # 5 s per read
+        try:
+            with self.assertRaises(TimeoutError):
+                releases.fetch_text(timeout=8)
+        finally:
+            releases.urllib.request.build_opener, releases.time.monotonic = real, clock
+
+    def test_redirect_must_stay_https(self):
+        req = urllib.request.Request(releases.ADOBE_URL)
+        with self.assertRaises(urllib.error.URLError):
+            releases._HttpsOnly().redirect_request(req, None, 302, "Found", {}, "http://example.com/x")
+        ok = releases._HttpsOnly().redirect_request(req, None, 302, "Found", {}, "https://example.com/x")
+        self.assertEqual(ok.full_url, "https://example.com/x")
 
     def test_classify(self):
         releases.refresh(self.cat, fetch=self.fetch()[0])
         c = releases.classify("2.4.8-p3", "community", "8.3", self.cat)
         self.assertEqual(c["latestPublished"], "2.4.9")
-        self.assertEqual(c["latestCompatible"], "2.4.8-p6")
-        self.assertEqual(c["eligible"][:2], ["2.4.8-p6", "2.4.8-p5"])
-        nine = [r for r in c["releases"] if r["version"] == "2.4.9"][0]
-        self.assertFalse(nine["compatible"])
-        self.assertIn("config.platform.php", nine["reason"])
+        # The version wizard moves config.platform.php along, so 2.4.9 is offered — with the PHP change noted.
+        self.assertEqual(c["latestCompatible"], "2.4.9")
+        self.assertEqual(c["eligible"][:3], ["2.4.9", "2.4.8-p6", "2.4.8-p5"])
+        by = {r["version"]: r for r in c["releases"]}
+        self.assertEqual(by["2.4.9"]["phpChange"], {"from": "8.3", "to": "8.5"})
+        self.assertEqual(by["2.4.8-p6"]["phpChange"], {"from": "8.3", "to": "8.4"})  # derived pins: PHP 8.4
+        self.assertIsNone(releases.classify("2.4.8-p3", "community", "8.4", self.cat)["releases"][1]["phpChange"])
+        # Not in the wizard: published only, with the reason.
+        r = releases.parse(ADOBE)
+        r["2.4.10"] = dict(r["2.4.9"])
+        c = releases.classify("2.4.8-p3", "community", None, self.cat, {"releases": r})
+        ten = c["releases"][0]
+        self.assertEqual((ten["version"], ten["compatible"]), ("2.4.10", False))
+        self.assertIn("No m2/ catalog line", ten["reason"])
         c = releases.classify("2.4.8-p3", "enterprise", None, self.cat)
         self.assertIn("2.4.9", c["eligible"])
         self.assertIn("entitlement", c["releases"][0]["note"])

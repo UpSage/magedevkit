@@ -29,6 +29,10 @@ const MODULE_BULK_MAX = 100;
 
 let modSearch = null;    // the search box, kept across re-renders so typing isn't lost
 
+function setSelected(name, on) {
+  if (on) S.modulesSel.add(name); else S.modulesSel.delete(name);
+}
+
 function modulesUrl(env) {
   return `/api/environments/${encodeURIComponent(env.id)}/modules`;
 }
@@ -54,7 +58,7 @@ function moduleMatches(m, f) {
   if (f.source === 'core' && !m.core) return false;
   if (f.source === 'app/code' && (m.core || m.source !== 'app/code')) return false;
   const q = f.q.trim().toLowerCase();
-  return !q || m.name.toLowerCase().includes(q) || (m.package || '').includes(q);
+  return !q || m.name.toLowerCase().includes(q) || (m.package || '').toLowerCase().includes(q);
 }
 
 // Production mode always builds: the code is locked and compiled there.
@@ -169,7 +173,7 @@ async function packagesUpdate(env, pkgs) {
       if (!apply) return;
       runAction(env, 'module_update', { packages, dryRun: false, build: withBuild }, {
         noConfirm: true, label: `Update ${what}${withBuild ? ' + build' : ''}`,
-        onDone: () => { S.modulesSel.clear(); loadModules().then(render); },
+        onDone: (u) => { if (u.rec.status === 'done') S.modulesSel.clear(); loadModules().then(render); },
       });
     },
   });
@@ -201,7 +205,6 @@ function ModulesTable(env) {
   const first = (S.modulesPage - 1) * MODULE_PAGE;
   const shown = rows.slice(first, first + MODULE_PAGE);
   const busy = envBlocked(env);
-  const avail = (n) => !env.readonly && env.actions[n] && env.actions[n].available;
 
   // Select all = every matching row on every page, never core (tick those
   // one by one with the core filter on).
@@ -211,7 +214,7 @@ function ModulesTable(env) {
     'aria-label': 'Select all matching modules', checked: selectable.length > 0 && selCount === selectable.length,
     indeterminate: selCount > 0 && selCount < selectable.length, disabled: !selectable.length,
     onChange: (e) => {
-      for (const m of selectable) { if (e.target.checked) S.modulesSel.add(m.name); else S.modulesSel.delete(m.name); }
+      for (const m of selectable) setSelected(m.name, e.target.checked);
       redrawModules();
     },
   });
@@ -222,7 +225,7 @@ function ModulesTable(env) {
     return TableRow(
       TableCell(m.enabled == null ? null : Checkbox({
         'aria-label': `Select ${m.name}`, checked: S.modulesSel.has(m.name),
-        onChange: (e) => { if (e.target.checked) S.modulesSel.add(m.name); else S.modulesSel.delete(m.name); redrawModules(); },
+        onChange: (e) => { setSelected(m.name, e.target.checked); redrawModules(); },
       }), 'w-8'),
       TableCell(h('div', { class: 'min-w-0' },
         h('div', { class: 'font-medium', text: m.name }),
@@ -233,11 +236,11 @@ function ModulesTable(env) {
       TableCell(m.core ? Badge('Core', 'secondary') : Badge(m.source === 'app/code' ? 'app/code' : 'Third-party', 'outline')),
       TableCell(h('div', { class: 'flex justify-end gap-2' },
         m.update.status === 'update-available' ? Button({
-          size: 'sm', label: 'Update', disabled: busy || !avail('module_update'),
+          size: 'sm', label: 'Update', disabled: busy || !actionAvailable(env, 'module_update'),
           onClick: () => packagesUpdate(env, updatablePackages([m])),
         }) : null,
         m.enabled == null ? null : Button({
-          variant: 'outline', size: 'sm', label: capitalize(op), disabled: busy || !avail(`module_${op}`),
+          variant: 'outline', size: 'sm', label: capitalize(op), disabled: busy || !actionAvailable(env, `module_${op}`),
           onClick: () => modulesToggle(env, [m], op),
         }))));
   });
@@ -251,11 +254,11 @@ function ModulesTable(env) {
     const tooMany = (n) => n > MODULE_BULK_MAX;
     bar = SelectionBar(`${sel.length} selected`,
       Button({ size: 'sm', iconName: 'download', label: `Update selected (${pkgs.length})`,
-        disabled: busy || !pkgs.length || tooMany(pkgs.length) || !avail('module_update'), onClick: () => packagesUpdate(env, pkgs) }),
+        disabled: busy || !pkgs.length || tooMany(pkgs.length) || !actionAvailable(env, 'module_update'), onClick: () => packagesUpdate(env, pkgs) }),
       Button({ variant: 'outline', size: 'sm', label: `Enable selected (${toEnable.length})`,
-        disabled: busy || !toEnable.length || tooMany(toEnable.length) || !avail('module_enable'), onClick: () => modulesToggle(env, toEnable, 'enable') }),
+        disabled: busy || !toEnable.length || tooMany(toEnable.length) || !actionAvailable(env, 'module_enable'), onClick: () => modulesToggle(env, toEnable, 'enable') }),
       Button({ variant: 'outline', size: 'sm', label: `Disable selected (${toDisable.length})`,
-        disabled: busy || !toDisable.length || tooMany(toDisable.length) || !avail('module_disable'), onClick: () => modulesToggle(env, toDisable, 'disable') }),
+        disabled: busy || !toDisable.length || tooMany(toDisable.length) || !actionAvailable(env, 'module_disable'), onClick: () => modulesToggle(env, toDisable, 'disable') }),
       Button({ variant: 'ghost', size: 'sm', label: 'Clear', onClick: () => { S.modulesSel.clear(); redrawModules(); } }));
   }
 
@@ -301,7 +304,6 @@ function ModulesTab(env) {
   });
   const enabled = data.modules.filter((m) => m.enabled).length;
   const updates = data.modules.filter((m) => m.update.status === 'update-available').length;
-  const avail = !env.readonly && env.actions.module_check_updates && env.actions.module_check_updates.available;
   return h('div', { class: 'space-y-4' },
     env.services.php.level !== 'ok' ? Alert({ variant: 'warning', iconName: 'alert', title: 'PHP-FPM isn’t running' },
       h('p', { text: 'The list is read from the files, but checking for updates, updating and enabling or disabling run in the php container — start the environment first.' })) : null,
@@ -313,7 +315,7 @@ function ModulesTab(env) {
       CardHeader(CardTitle('Modules'),
         CardDescription(`${enabled} enabled · ${data.modules.length - enabled} disabled or not registered · ${updates} with an update. ${UpdatesNote(data.updates)}`),
         CardAction(Button({ variant: 'outline', size: 'sm', iconName: 'rotateCw', label: 'Check for updates',
-          disabled: envBlocked(env) || !avail, onClick: () => checkUpdates(env) }))),
+          disabled: envBlocked(env) || !actionAvailable(env, 'module_check_updates'), onClick: () => checkUpdates(env) }))),
       CardContent(h('div', { class: 'space-y-4' },
         h('div', { class: 'flex flex-col gap-2 sm:flex-row sm:items-center' },
           h('div', { class: 'min-w-0 flex-1' }, modSearch), filter('status', MODULE_STATUSES), filter('source', MODULE_SOURCES)),

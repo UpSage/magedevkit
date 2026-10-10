@@ -333,13 +333,16 @@ def run_action(e, name, body, all_envs):
         label = "%s %s%s" % (label.split()[0], mods[0] if len(mods) == 1 else "%d modules" % len(mods),
                              " + build" if build else "")
     elif spec.get("arg") == "update":
-        dry, build = (body or {}).get("dryRun", False), (body or {}).get("build", True)
+        # Dry run unless the page says otherwise: a real update must be asked
+        # for explicitly (the page sends dryRun: false only after a dry run
+        # of the same packages passed).
+        dry, build = (body or {}).get("dryRun", True), (body or {}).get("build", True)
         if not isinstance(dry, bool) or not isinstance(build, bool):
             raise OpError(400, "dryRun and build must be true or false.")
         if not dry and not build and e.production:
             raise OpError(400, "In production mode an update needs the full build (di:compile and static content).")
         specs = update_specs(e, body)
-        argv += (["--dry-run"] if dry else []) + ([] if dry or build else ["--no-build"]) + specs
+        argv += (["--dry-run"] if dry else []) + ([] if dry or build else ["--quick"]) + specs
         what = specs[0].split(":")[0] if len(specs) == 1 else "%d packages" % len(specs)
         label = "Dry run: update %s" % what if dry else "Update %s%s" % (what, " + build" if build else "")
     elif spec.get("arg") == "mode":

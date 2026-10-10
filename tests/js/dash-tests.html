@@ -25,6 +25,9 @@
 const results = [];
 function check(name, ok, detail) { results.push((ok ? 'PASS ' : 'FAIL ') + name + (ok || detail === undefined ? '' : ' — ' + detail)); }
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+// No polling or page redraws behind the tests' back: these tabs are drawn by hand.
+refresh = () => {};
+watchOperation = () => {};
 
 const mod = (name, extra) => Object.assign({ name, vendor: name.split('_')[0], enabled: true, source: 'composer', package: null,
   version: null, setupVersion: null, sequence: [], dependents: [], core: false,
@@ -115,7 +118,7 @@ async function run() {
   const allBox = () => app.querySelector('input[aria-label="Select all matching modules"]');
   check('update badge', app.textContent.includes('1.19.2') && app.textContent.includes('Version wizard') && app.textContent.includes('Up to date'));
   box('Amasty_Base').click();
-  check('select-all mixed', allBox().indeterminate && allBox().getAttribute('aria-checked') === 'mixed');
+  check('select-all mixed', allBox().indeterminate === true);
   allBox().click();
   check('select-all skips core', S.modulesSel.size === 4 && !S.modulesSel.has('Magento_Store'), [...S.modulesSel].join());
   const barText = () => (app.querySelector('[role=toolbar]') || {}).textContent || '';
@@ -185,17 +188,20 @@ async function run() {
     releases: { installed: '2.4.8-p3', latestPublished: '2.4.9', latestCompatible: '2.4.8-p6', eligible: ['2.4.8-p6', '2.4.8-p5'],
       check: { fetchedAt: new Date().toISOString(), lastError: null, stale: false, refreshing: false },
       releases: [
-        { version: '2.4.9', state: 'catalog', compatible: false, reason: 'composer.json pins PHP 8.3 (config.platform.php); Adobe lists 8.5 for it.', note: null },
-        { version: '2.4.8-p6', state: 'derived', compatible: true, reason: null, note: null },
+        { version: '2.4.10', state: 'published', compatible: false, reason: 'No m2/ catalog line for 2.4.10 — add a folder (m2/README.md).', note: null },
+        { version: '2.4.8-p6', state: 'derived', compatible: true, reason: null, note: null, phpChange: { from: '8.3', to: '8.4' } },
         { version: '2.4.8-p5', state: 'catalog', compatible: true, reason: null, note: null },
       ] },
   });
   const card = ReleasesCard(REL);
   check('releases card', card.textContent.includes('Latest you can move to') && card.textContent.includes('2.4.8-p6')
-    && card.textContent.includes('Not compatible') && card.textContent.includes('config.platform.php'));
+    && card.textContent.includes('Not in the wizard yet') && card.textContent.includes('Available · PHP 8.3 → 8.4'), card.textContent);
+  check('how to upgrade', card.textContent.includes('How to upgrade') && card.textContent.includes('moves that pin to 8.4'));
+  check('how to offer a missing one', card.textContent.includes('doesn’t offer yet') && card.textContent.includes('bin/m2/check-requirements')
+    && card.textContent.includes('m2/2.4.10/version.env'));
   check('releases card wizard button', [...card.querySelectorAll('button')].some((b) => b.textContent.includes('Open the version wizard')));
   const banner = ReleaseBanner(REL);
-  check('release banner', banner && banner.textContent.includes('Magento 2.4.8-p6 is available'));
+  check('release banner', banner && banner.textContent.includes('Magento 2.4.8-p6 is available') && banner.textContent.includes('PHP 8.4'));
   window.render = () => {};
   banner.querySelector('button[title="Dismiss"]').click();
   check('banner dismissed for that version', ReleaseBanner(REL) === null);

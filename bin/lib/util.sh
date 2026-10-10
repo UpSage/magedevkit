@@ -43,6 +43,13 @@ composer_check() {
     [ "$#" -eq 0 ] || [ "$mode" = update ] || fail "Package names only go with composer update."
 }
 
+# require_php_running — stops unless this stack's php container runs (every
+# bin/magento / bin/composer step runs in it; nothing here starts it).
+require_php_running() {
+    "$PLATFORM_DIR/bin/platform" ps --status running --services 2>/dev/null | grep -qx php \
+        || fail "The php container isn't running — start the environment first (this doesn't start or recreate containers)."
+}
+
 # module_check MODULE... — Magento module names (Vendor_Module; a lowercase
 # vendor exists too: dotdigitalgroup_Email), at least one. The dashboard uses
 # the same rule (ops.MODULE_RE).

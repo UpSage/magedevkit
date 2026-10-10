@@ -413,13 +413,12 @@ function NativeSelect({ options, value, onChange, cls, ...rest }) {
 
 // Native checkbox styled like shadcn's Checkbox. props go to the <input>;
 // indeterminate: true is the "some selected" state of a select-all box (a
-// dash, aria-checked="mixed").
+// dash; the browser reports the native property as "mixed" itself).
 function Checkbox(props) {
   const input = h('input', Object.assign({
     type: 'checkbox',
     class: 'peer border-input dark:bg-input/30 checked:bg-primary checked:border-primary dark:checked:bg-primary indeterminate:bg-primary indeterminate:border-primary dark:indeterminate:bg-primary focus-visible:border-ring focus-visible:ring-ring/50 size-4 shrink-0 cursor-pointer appearance-none border shadow-xs transition-shadow outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50',
   }, props));
-  if (props && props.indeterminate) input.setAttribute('aria-checked', 'mixed');
   return h('span', { class: 'relative inline-flex size-4 shrink-0' }, input,
     icon('check', 'pointer-events-none absolute inset-0 m-auto hidden size-3.5 text-primary-foreground peer-checked:block'),
     icon('minus', 'pointer-events-none absolute inset-0 m-auto hidden size-3.5 text-primary-foreground peer-indeterminate:block'));

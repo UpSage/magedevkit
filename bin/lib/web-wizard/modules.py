@@ -39,8 +39,10 @@ MODULES_BLOCK_RE = re.compile(r"""['"]modules['"]\s*=>\s*(?:\[|array\s*\()([^\[\
 CONFIG_ROW_RE = re.compile(r"""^['"]([A-Za-z][A-Za-z0-9]*_[A-Za-z0-9]+)['"]\s*=>\s*([01])\s*,?$""")
 MAX_XML = 256 * 1024
 PRODUCT_RE = re.compile(r"^magento/product-(community|enterprise)-edition$")
-MAX_PACKAGES = 100
-PACKAGE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
+# Package updates (update_specs): more than ops.MAX_PACKAGES' 20 for
+# composer update, and no wildcards — each name is one exact package.
+MAX_UPDATE_PACKAGES = 100
+UPDATE_PACKAGE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
 # bin/lib/util.sh COMPOSER_SPEC_RE, without the package part.
 CONSTRAINT_RE = re.compile(r"^[A-Za-z0-9.*^~|<>=!@ ,_-]+$")
 RELEASE_RE = re.compile(r"^v?(\d+(?:\.\d+){0,3}(?:-p\d+)?)$")
@@ -160,10 +162,10 @@ def update_status(pkg, source, core, installed, check):
         return {"status": "managed-by-version-wizard", "reason": "Part of Magento — it moves with Magento itself (Workflows → Switch Magento version)."}
     if not check:
         return {"status": "unable-to-check", "reason": "No update check has run yet."}
-    if check.get("packages") is None:
+    if not isinstance(check.get("packages"), dict):
         return {"status": "unable-to-check", "reason": "The last update check failed."}
     line = check["packages"].get(pkg)
-    if not line:
+    if not isinstance(line, dict):
         return {"status": "unable-to-check",
                 "reason": "Not in the last check: composer.json doesn't require it directly (it comes with another package), or it was added since."}
     if installed and line.get("version") and line["version"] != installed:
@@ -223,9 +225,13 @@ def _build(e):
         })
     updates = None
     if check:
+        redact = Redactor(e)  # composer's warning/abandoned notes and error text reach the page
+        for m in modules:
+            if m["update"].get("note"):
+                m["update"]["note"] = redact(m["update"]["note"])
         lock_time = _mtime(os.path.join(md, "composer.lock"))
-        updates = {"checkedAt": check.get("checkedAt"), "ok": check.get("packages") is not None,
-                   "error": Redactor(e)(check.get("error") or "") or None,
+        updates = {"checkedAt": check.get("checkedAt"), "ok": isinstance(check.get("packages"), dict),
+                   "error": redact(check.get("error") or "") or None,
                    "stale": bool(lock_time and lock_time > (_mtime(check_path(e)) or 0))}
     return {"modules": modules, "error": error, "updates": updates}
 
@@ -238,9 +244,9 @@ def update_specs(e, body):
     other keeps composer.json's constraint (composer then installs the newest
     version that allows)."""
     names = (body or {}).get("packages") or []
-    if not isinstance(names, list) or not names or len(names) > MAX_PACKAGES \
-            or not all(isinstance(n, str) and PACKAGE_RE.match(n) for n in names):
-        raise webcore.OpError(400, "Name 1 to %d packages, as vendor/package." % MAX_PACKAGES)
+    if not isinstance(names, list) or not names or len(names) > MAX_UPDATE_PACKAGES \
+            or not all(isinstance(n, str) and UPDATE_PACKAGE_RE.match(n) for n in names):
+        raise webcore.OpError(400, "Name 1 to %d packages, as vendor/package." % MAX_UPDATE_PACKAGES)
     by_pkg = {}
     for m in listing(e)["modules"]:
         if m["package"]:

@@ -43,7 +43,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --quick) QUICK=1; shift ;;
         --composer)
-            [ -n "${2:-}" ] || fail "--composer needs install or update."
+            [ -n "${2:-}" ] || fail "--composer needs install, update or require."
             COMPOSER_MODE="$2"; shift 2
             PACKAGES=("$@"); break ;;
         --module)
@@ -69,8 +69,7 @@ wizard_lock
 step() { STEP="$1"; printf '\n→ %s\n' "$1"; }
 
 STEP="checking the stack"
-"$PLATFORM_DIR/bin/platform" ps --status running --services 2>/dev/null | grep -qx php \
-    || fail "The php container isn't running — start the environment first (this build doesn't start or recreate containers)."
+require_php_running
 
 LOCK_BEFORE="$(file_sha256 "$MAGENTO_DIR/composer.lock")"
 MAINT=0
@@ -110,8 +109,10 @@ if [ "$MAGENTO_MODE" = production ]; then
 fi
 
 if [ "$COMPOSER_MODE" = require ]; then
-    SNAPSHOT="$(mktemp -d)"
-    cp "$MAGENTO_DIR/composer.json" "$MAGENTO_DIR/composer.lock" "$SNAPSHOT/"
+    # Only a complete copy counts: finish restores from SNAPSHOT.
+    snap="$(mktemp -d)"
+    cp "$MAGENTO_DIR/composer.json" "$MAGENTO_DIR/composer.lock" "$snap/" || { rm -rf "$snap"; fail "Couldn't copy composer.json and composer.lock aside — nothing was changed."; }
+    SNAPSHOT="$snap"
     step "composer require ${PACKAGES[*]}"
     "$PLATFORM_DIR/bin/composer" require --update-with-dependencies --no-interaction "${PACKAGES[@]}"
     COMPOSER_DONE=1

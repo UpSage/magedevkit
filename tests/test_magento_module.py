@@ -127,7 +127,7 @@ class MagentoModule(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(calls, ["composer require --update-with-dependencies --no-interaction amasty/base:^1.17"] + BUILD)
         os.remove(self.calls)
-        p, calls = self.run_module("update", "--no-build", "amasty/base:^1.17")
+        p, calls = self.run_module("update", "--quick", "amasty/base:^1.17")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(calls, ["composer require --update-with-dependencies --no-interaction amasty/base:^1.17",
                                  "magento maintenance:enable", "magento setup:upgrade", "magento cache:flush",
@@ -151,7 +151,7 @@ class MagentoModule(unittest.TestCase):
 
     def test_update_in_production(self):
         self.mode("production")
-        p, calls = self.run_module("update", "--no-build", "amasty/base:^1.17")
+        p, calls = self.run_module("update", "--quick", "amasty/base:^1.17")
         self.assertNotEqual(p.returncode, 0)
         self.assertEqual(calls, [])
         p, calls = self.run_module("update", "--dry-run", "amasty/base:^1.17", DRY="1")

@@ -297,7 +297,7 @@ function ActionCard(title, desc, buttons) {
 
 function MagentoTab(env) {
   const ro = !!env.readonly;
-  const avail = (n) => !ro && env.actions[n] && env.actions[n].available;
+  const avail = (n) => actionAvailable(env, n);
   const btn = (name, label, variant = 'outline', body, opts) => Button({ variant, size: 'sm', label, disabled: !avail(name), onClick: () => runAction(env, name, body, opts) });
   const stopped = env.services.php.level !== 'ok';
   const rebuildWf = (env.workflows || {}).rebuild || {};
@@ -353,7 +353,7 @@ function dismissRelease(env, version) {
 function VersionWizardButton(env) {
   const wf = (env.workflows || {}).version || {};
   return Button({ size: 'sm', iconName: 'external', label: 'Open the version wizard',
-    disabled: !!env.readonly || !wf.available || envBlocked(env), onClick: () => startWorkflow(env, 'version') });
+    disabled: !wf.available || envBlocked(env), onClick: () => startWorkflow(env, 'version') });
 }
 
 // "Magento 2.4.8-p6 is available" — once per version: dismissing it hides
@@ -364,8 +364,14 @@ function ReleaseBanner(env) {
   if (!v || releaseDismissed(env, v)) return null;
   const rel = r.releases.find((x) => x.version === v) || {};
   return Alert({ variant: 'success', iconName: 'download', title: `Magento ${v} is available`, onDismiss: () => dismissRelease(env, v) },
-    h('p', { text: `It’s compatible with this stack${rel.state === 'derived' ? ' — its stack versions come from the newest catalogued patch, checked against Adobe’s requirements' : ''}. The version wizard takes a snapshot first, so the upgrade can be rolled back.${rel.note ? ` ${rel.note}` : ''}` }),
+    h('p', { text: `The version wizard can upgrade this store to it${rel.state === 'derived' ? ' — its stack versions come from the newest catalogued patch, checked against Adobe’s requirements' : ''}. It takes a snapshot first, so the upgrade can be rolled back.${rel.note ? ` ${rel.note}` : ''}` }),
+    rel.phpChange ? h('p', { text: phpChangeText(rel) }) : null,
     h('div', { class: 'pt-1' }, VersionWizardButton(env)));
+}
+
+function phpChangeText(rel) {
+  const { from, to } = rel.phpChange;
+  return `It needs PHP ${to}, and composer.json pins PHP ${from} (config.platform.php): the wizard moves that pin to ${to}, so every extension must support PHP ${to}. If composer can’t resolve the upgrade, the wizard puts composer.json and composer.lock back and nothing changes.`;
 }
 
 async function checkReleases() {
@@ -375,10 +381,20 @@ async function checkReleases() {
   refresh();
 }
 
+// Available (the version wizard lists it), with a PHP change (it moves
+// composer.json's PHP pin), or not in the wizard yet (no catalog line, or
+// the stack check failed).
 function ReleaseBadge(rel) {
-  if (rel.compatible) return Badge('Compatible', 'success', 'check');
-  if (rel.state === 'published') return Badge('Not offered', 'secondary');
-  return Badge('Not compatible', 'destructive');
+  if (!rel.compatible) return Badge('Not in the wizard yet', 'secondary');
+  if (rel.phpChange) return Badge(`Available · PHP ${rel.phpChange.from} → ${rel.phpChange.to}`, 'warning', 'alert');
+  return Badge('Available', 'success', 'check');
+}
+
+function releaseDetails(rel) {
+  if (!rel.compatible) return rel.reason;
+  if (rel.phpChange) return `The upgrade moves composer.json’s PHP pin ${rel.phpChange.from} → ${rel.phpChange.to}; extensions must support PHP ${rel.phpChange.to}.`;
+  return rel.note || (rel.state === 'derived'
+    ? 'Stack versions from the newest catalogued patch, checked against Adobe’s requirements.' : 'In the m2/ catalog.');
 }
 
 function ReleasesCard(env) {
@@ -408,12 +424,27 @@ function ReleasesCard(env) {
         TableBody(rows.map((x) => TableRow(
           TableCell(h('span', { class: 'flex items-center gap-2' }, x.version, x.state === 'derived' ? Badge('New', 'outline') : null)),
           TableCell(ReleaseBadge(x)),
-          TableCell(x.reason || x.note || (x.state === 'derived'
-            ? 'Stack versions from the newest catalogued patch, checked against Adobe’s requirements.' : 'In the m2/ catalog.'),
-          'text-muted-foreground whitespace-normal'))))) : null,
+          TableCell(releaseDetails(x), 'text-muted-foreground whitespace-normal'))))) : null,
+      ReleaseHelp(r),
       r.releases.length > RELEASE_ROWS ? h('p', { class: 'text-muted-foreground text-xs', text: `…and ${r.releases.length - RELEASE_ROWS} more.` }) : null)),
     r.latestCompatible ? CardFooter(VersionWizardButton(env),
       h('span', { class: 'text-muted-foreground text-xs', text: 'Upgrades only through the wizard: review, snapshot, then the upgrade.' })) : null);
+}
+
+// What to do about the releases above: how an upgrade goes, what a PHP
+// change means, and how a release that isn't in the wizard yet gets there.
+function ReleaseHelp(r) {
+  const latest = r.releases.find((x) => x.version === r.latestCompatible);
+  const missing = r.releases.filter((x) => !x.compatible);
+  return h('div', { class: 'space-y-3' },
+    latest ? Alert({ iconName: 'info', title: 'How to upgrade' },
+      h('p', { text: `Open the version wizard (also under Workflows → Switch Magento version) and pick ${latest.version}, or another release marked Available. It shows a review with the stack changes, takes a snapshot of the code and database, then upgrades with the store in maintenance mode — and it can roll back to that snapshot later.` }),
+      latest.phpChange ? h('p', { text: phpChangeText(latest) }) : null) : null,
+    missing.length ? Alert({ iconName: 'info', title: 'Releases the version wizard doesn’t offer yet' },
+      h('p', { text: `${missing.map((x) => x.version).join(', ')} — the reason is in the table. The version wizard only offers releases whose stack versions this kit knows: a folder in the platform repo’s m2/, or a new patch whose versions passed Adobe’s requirements.` }),
+      h('p', {}, 'To offer one, compare with Adobe’s requirements (', InlineCode('bin/m2/check-requirements'),
+        '), then add its folder — e.g. ', InlineCode(`m2/${missing[0].version.split('-')[0]}/version.env`),
+        ' (see m2/README.md). It shows up here and in the wizard after that.')) : null);
 }
 
 // composer update: everything, or only the packages typed in.

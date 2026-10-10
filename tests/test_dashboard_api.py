@@ -257,11 +257,11 @@ class DashboardApi(unittest.TestCase):
         self.assertEqual(rec["label"], "Dry run: update amasty/base")
         self.assertIn("bin/local/magento-module update --dry-run amasty/base:^2.0.0\n", calls(self.b))
         code, body, _ = self.dash.request("POST", "/api/environments/stack-b/actions/module_update",
-                                          {"packages": ["amasty/base"], "build": False})
+                                          {"packages": ["amasty/base"], "dryRun": False, "build": False})
         self.assertEqual(code, 202, body)
         rec = self.wait_done(self.b, "stack-b", body["operation"])
         self.assertEqual(rec["label"], "Update amasty/base")
-        self.assertIn("bin/local/magento-module update --no-build amasty/base:^2.0.0\n", calls(self.b))
+        self.assertIn("bin/local/magento-module update --quick amasty/base:^2.0.0\n", calls(self.b))
         for bad in ({"packages": ["magento/module-catalog"]}, {"packages": ["amasty/base"], "dryRun": "yes"},
                     {"packages": ["amasty/base; rm"]}, {"packages": ["v/p%d" % i for i in range(101)]}):
             code, _, _ = self.dash.request("POST", "/api/environments/stack-b/actions/module_update", bad)
@@ -269,7 +269,7 @@ class DashboardApi(unittest.TestCase):
 
     def test_magento_releases(self):
         # stack-c: Magento 2.4.8-p3, composer.json pinning PHP 8.3; its repo has the real m2/ catalog.
-        shutil.copytree(os.path.join(helpers.REPO, "m2"), os.path.join(self.repo, "m2"), dirs_exist_ok=True)
+        helpers.write_catalog(os.path.join(self.repo, "m2"))
         md = os.path.join(self.c, "magento")
         helpers.write(os.path.join(md, "composer.lock"),
                       '{"packages": [{"name": "magento/product-community-edition", "version": "2.4.8-p3"}]}')
@@ -285,14 +285,14 @@ class DashboardApi(unittest.TestCase):
         r = body["releases"]
         self.assertEqual(r["installed"], "2.4.8-p3")
         self.assertEqual(r["latestPublished"], "2.4.9")
-        self.assertEqual(r["latestCompatible"], "2.4.8-p6")
-        self.assertEqual(r["eligible"], ["2.4.8-p6", "2.4.8-p5", "2.4.8-p4"])
+        self.assertEqual(r["latestCompatible"], "2.4.9")
+        self.assertEqual(r["eligible"], ["2.4.9", "2.4.8-p6", "2.4.8-p5", "2.4.8-p4"])
         nine = [x for x in r["releases"] if x["version"] == "2.4.9"][0]
-        self.assertIn("config.platform.php", nine["reason"])  # PHP 8.3 pinned, 2.4.9 needs 8.5
+        self.assertEqual(nine["phpChange"], {"from": "8.3", "to": "8.5"})  # the wizard moves the pin along
         self.assertFalse(r["check"]["stale"])
         self.assertEqual(body["magentoEdition"], "community")
         code, body, _ = self.dash.request("GET", "/api/environments")
-        self.assertEqual({e["id"]: e["releaseUpdate"] for e in body["environments"]}["stack-c"], "2.4.8-p6")
+        self.assertEqual({e["id"]: e["releaseUpdate"] for e in body["environments"]}["stack-c"], "2.4.9")
         # Check now with no network: 200, the error recorded, the old copy kept.
         code, body, _ = self.dash.request("POST", "/api/releases/refresh", {})
         self.assertEqual(code, 200, body)
@@ -302,7 +302,7 @@ class DashboardApi(unittest.TestCase):
         self.assertEqual(code, 200, body)
         self.assertEqual(self.dash.request("POST", "/api/releases/refresh", {}, headers={"X-Wizard": None})[0], 403)
         code, body, _ = self.dash.request("GET", "/api/environments/stack-c")
-        self.assertEqual(body["releases"]["latestCompatible"], "2.4.8-p6")
+        self.assertEqual(body["releases"]["latestCompatible"], "2.4.9")
 
     def test_ownership_workflow(self):
         code, body, _ = self.dash.request("POST", "/api/environments/stack-b/workflows/ownership", {"model": "two-owner"})

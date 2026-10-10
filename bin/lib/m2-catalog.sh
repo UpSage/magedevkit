@@ -8,12 +8,14 @@
 # Patches Adobe has published that the repo's m2/ doesn't have yet, with the
 # stack versions of the newest catalogued release on their line, checked
 # against Adobe's requirements (bin/lib/web-wizard/releases.py writes them
-# here). Same layout as m2/; a repo folder always wins.
-M2_DERIVED_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/platform-releases/m2"
+# here). Same layout as m2/; a repo folder always wins. One tree per
+# catalog — releases.derived_dir names it the same way (sha1 of m2/'s real
+# path), so checkouts with different catalogs never mix.
+M2_DERIVED_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/platform-releases/m2-$(cd "$PLATFORM_DIR/m2" 2>/dev/null && pwd -P | tr -d '\n' | sha1sum | cut -c1-12)"
 
 # releases_refresh — Adobe's release list for the version menus below: at
-# most one download a day, 5 s at most; offline (or without python3) the
-# menus are the m2/ catalog alone.
+# most one download a day (5 s per request, 15 s in all); offline (or
+# without python3) the menus are the m2/ catalog alone.
 releases_refresh() {
     local note
     if command -v python3 >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
@@ -27,14 +29,27 @@ releases_refresh() {
     return 0
 }
 
-# m2_patches BASE — its patch folders (p1, p2 …), the repo's and the derived
-# ones, oldest first, each once.
+# m2_patches BASE — its patch folders with a version.env (p1, p2 …), the
+# repo's and the derived ones, oldest first, each once.
 m2_patches() {
     local d
     for d in "$PLATFORM_DIR/m2/$1" "$M2_DERIVED_DIR/$1"; do
         [ -d "$d" ] || continue
-        find "$d" -mindepth 1 -maxdepth 1 -type d -name 'p*' -printf '%f\n'
-    done | sort -uV
+        find "$d" -mindepth 2 -maxdepth 2 -path "$d/p*/version.env" -printf '%h\n'
+    done | sed 's|.*/||' | sort -uV
+}
+
+# m2_hooks NAME — the selected release's NAME hooks (post-install,
+# post-upgrade), base folder first: executable files from the repo's m2/
+# only, never from a derived folder in the cache.
+m2_hooks() {
+    local hook
+    for hook in "$M2_BASE_DIR/$1" "${M2_PATCH_DIR:+$M2_PATCH_DIR/$1}"; do
+        case "$hook" in
+            "$PLATFORM_DIR/m2/"*) [ -x "$hook" ] && printf '%s\n' "$hook" ;;
+        esac
+    done
+    return 0
 }
 
 # m2_patch_dir BASE PATCH — that patch's folder (the repo's if it has one,

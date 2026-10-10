@@ -21,7 +21,9 @@ A folder in the repo's m2/ always wins over a derived one.
   releases.py list --tsv --catalog DIR
 
 Cache: ${XDG_CACHE_HOME:-~/.cache}/platform-releases/ — releases.json (0600)
-and the derived m2/ tree, written whole and swapped in under a lock. Offline,
+and one derived tree per catalog (m2-<hash of the catalog's real path>, so
+two checkouts with different catalogs never mix), written whole and
+swapped in under a lock. Offline,
 refresh keeps the old data, records the error, prints a note and exits 0, so
 the wizards look exactly like they do without this.
 
@@ -33,6 +35,7 @@ dashboard imports it as a module.
 import argparse
 import datetime
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -40,6 +43,7 @@ import shutil
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 ADOBE_URL = "https://raw.githubusercontent.com/AdobeDocs/commerce-operations.en/main/_jekyll/_data/system-requirements.yml"
@@ -54,6 +58,8 @@ VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-p(\d+))?$")
 SERVICES = (("PHP", "PHP_VERSION"), ("MariaDB", "MARIADB_VERSION"), ("OpenSearch", "OPENSEARCH_VERSION"),
             ("Valkey", "VALKEY_VERSION"), ("RabbitMQ", "RABBITMQ_VERSION"), ("Varnish", "VARNISH_VERSION"),
             ("nginx", "NGINX_VERSION"), ("Composer", "COMPOSER_VERSION"))
+# Without these in Adobe's entry, nothing can be checked — never derived.
+REQUIRED_SERVICES = ("PHP", "MariaDB", "OpenSearch")
 # Every stack key a version.env can pin (bin/lib/m2-catalog.sh M2_STACK_KEYS).
 STACK_KEYS = tuple(k for _, k in SERVICES) + ("DEBIAN_RELEASE",)
 
@@ -61,6 +67,13 @@ STACK_KEYS = tuple(k for _, k in SERVICES) + ("DEBIAN_RELEASE",)
 def cache_root():
     base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
     return os.path.join(base, "platform-releases")
+
+
+def derived_dir(catalog_dir, root=None):
+    """This catalog's derived tree — bin/lib/m2-catalog.sh M2_DERIVED_DIR
+    computes the same name (sha1 of the catalog's real path, 12 hex)."""
+    digest = hashlib.sha1(os.path.realpath(catalog_dir).encode("utf-8")).hexdigest()[:12]
+    return os.path.join(root or cache_root(), "m2-" + digest)
 
 
 def version_key(v):
@@ -89,12 +102,30 @@ def age(iso):
 # Adobe's data
 # ---------------------------------------------------------------------------
 
+class _HttpsOnly(urllib.request.HTTPRedirectHandler):
+    """Follows redirects only to https:// URLs."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.lower().startswith("https://"):
+            raise urllib.error.URLError("refused a redirect to a non-https URL")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch_text(timeout=8):
-    """Adobe's file as text. Raises on any network/HTTP error or a body over
-    MAX_BYTES."""
+    """Adobe's file as text. Raises on any network/HTTP error, a redirect
+    away from https, a body over MAX_BYTES, or a download that takes longer
+    than `timeout` in all (not just per read)."""
     req = urllib.request.Request(ADOBE_URL, headers={"User-Agent": "MageDevKit release check"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        body = r.read(MAX_BYTES + 1)
+    deadline = time.monotonic() + timeout
+    body = b""
+    with urllib.request.build_opener(_HttpsOnly).open(req, timeout=timeout) as r:
+        while len(body) <= MAX_BYTES:
+            chunk = r.read(65536)
+            if not chunk:
+                break
+            body += chunk
+            if time.monotonic() > deadline:
+                raise TimeoutError("the download took over %gs" % timeout)
     if len(body) > MAX_BYTES:
         raise ValueError("the file is over %d MB" % (MAX_BYTES // 1024 // 1024))
     return body.decode("utf-8")
@@ -187,7 +218,7 @@ def derive(releases, catalog_dir):
             continue
         src = max(older, key=version_key)
         pins = {k: cat[src][k] for k in STACK_KEYS if cat[src].get(k)}
-        failed = []
+        failed = ["Adobe lists no %s for it" % svc for svc in REQUIRED_SERVICES if not releases[ver].get(svc)]
         for svc, key in SERVICES:
             want = releases[ver].get(svc)
             if not want:
@@ -205,32 +236,37 @@ def derive(releases, catalog_dir):
     return out
 
 
-def write_derived(root, entries, fetched_at):
-    """Rebuilds <root>/m2/ from the derived entries: written in a temp folder
-    and swapped in, so a release that's now catalogued (or no longer passes)
-    disappears."""
-    tmp = tempfile.mkdtemp(prefix="m2.", dir=root)
-    for e in entries:
-        if e["state"] != "derived":
-            continue
-        base, patch = e["version"].split("-", 1)
-        d = os.path.join(tmp, base, patch)
-        os.makedirs(d)
-        lines = ["# Derived from %s + Adobe's system requirements (fetched %s) by" % (e["from"], fetched_at or "?"),
-                 "# bin/lib/web-wizard/releases.py. A folder for this release in m2/ replaces it.",
-                 "MAGENTO_VERSION=%s" % e["version"]]
-        lines += ["%s=%s" % (k, e["pins"][k]) for k in STACK_KEYS if k in e["pins"]]
-        with open(os.path.join(d, "version.env"), "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-    final = os.path.join(root, "m2")
-    old = None
-    if os.path.exists(final):
+def write_derived(final, entries, fetched_at):
+    """Rebuilds the derived tree `final` (derived_dir) from the derived
+    entries: written in a temp folder next to it and swapped in, so a
+    release that's now catalogued (or no longer passes) disappears. Call
+    with the cache lock held."""
+    root = os.path.dirname(final)
+    for name in os.listdir(root):  # leftovers of an interrupted run, and the pre-1.0.1 shared tree
+        if name.startswith("tmp.m2-") or name.endswith(".old") or name == "m2":
+            shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+    tmp = tempfile.mkdtemp(prefix="tmp." + os.path.basename(final) + ".", dir=root)
+    try:
+        for e in entries:
+            if e["state"] != "derived":
+                continue
+            base, patch = e["version"].split("-", 1)
+            d = os.path.join(tmp, base, patch)
+            os.makedirs(d)
+            lines = ["# Derived from %s + Adobe's system requirements (fetched %s) by" % (e["from"], fetched_at or "?"),
+                     "# bin/lib/web-wizard/releases.py. A folder for this release in m2/ replaces it.",
+                     "MAGENTO_VERSION=%s" % e["version"]]
+            lines += ["%s=%s" % (k, e["pins"][k]) for k in STACK_KEYS if k in e["pins"]]
+            with open(os.path.join(d, "version.env"), "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
         old = final + ".old"
+        if os.path.exists(final):
+            os.rename(final, old)
+        os.rename(tmp, final)
         shutil.rmtree(old, ignore_errors=True)
-        os.rename(final, old)
-    os.rename(tmp, final)
-    if old:
-        shutil.rmtree(old, ignore_errors=True)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -247,11 +283,15 @@ def load(root=None):
 
 
 def save(root, data):
-    fd, tmp = tempfile.mkstemp(prefix="releases.", dir=root)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=1)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, os.path.join(root, "releases.json"))
+    fd, tmp = tempfile.mkstemp(prefix="releases.", dir=root)  # 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1)
+        os.replace(tmp, os.path.join(root, "releases.json"))
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 def refresh(catalog_dir, if_stale=False, timeout=8, fetch=fetch_text):
@@ -281,7 +321,7 @@ def refresh(catalog_dir, if_stale=False, timeout=8, fetch=fetch_text):
                     data["lastError"], "using the copy from %s" % data["fetchedAt"] if data.get("fetchedAt") else "using the m2/ catalog only")
             save(root, data)
         entries = derive(data.get("releases") or {}, catalog_dir)
-        write_derived(root, entries, data.get("fetchedAt"))
+        write_derived(derived_dir(catalog_dir, root), entries, data.get("fetchedAt"))
     new = [e["version"] for e in entries if e["state"] == "derived" and e["version"] not in known]
     if new and not note:
         note = "New Magento release(s) from Adobe, offered with checked stack versions: %s." % ", ".join(new)
@@ -289,30 +329,34 @@ def refresh(catalog_dir, if_stale=False, timeout=8, fetch=fetch_text):
 
 
 def classify(installed, edition, platform_php, catalog_dir, data=None):
-    """What an environment on `installed` could move to: every newer release
-    with whether it's compatible with this kit and project, and why not.
-      published  — Adobe (or the catalog) lists it and it's newer;
-      compatible — catalogued, or derived pins passed; and the project's
-                   composer.json config.platform.php (if set) is in Adobe's
-                   PHP list for it;
-      eligible   — compatible: selectable in the version wizard.
+    """What an environment on `installed` could move to: every newer release,
+    and whether the version wizard offers it.
+      compatible — catalogued, or derived pins passed: the version wizard
+                   lists it (state catalog / derived); otherwise "published"
+                   only, with the reason;
+      phpChange  — {from, to} when composer.json pins config.platform.php to
+                   another PHP than the release's: the wizard moves that pin
+                   along (bin/lib/version-engine.sh), so every extension has
+                   to support the new PHP — or composer refuses and the
+                   wizard puts everything back;
+      eligible   — the compatible ones, newest first.
     Commerce (edition "enterprise") releases note the repo.magento.com
     entitlement they need."""
     data = load() if data is None else data
-    releases = data.get("releases") or {}
-    entries = derive(releases, catalog_dir)
+    entries = derive(data.get("releases") or {}, catalog_dir)
+    cat = catalog(catalog_dir)
     newer = [e for e in entries if not installed or version_key(e["version"]) > version_key(installed)]
     out = []
     for e in newer:
-        reason = None
-        if e["state"] == "published":
-            reason = e["note"]
-        elif platform_php and releases.get(e["version"], {}).get("PHP") \
-                and not satisfies(platform_php, releases[e["version"]]["PHP"]):
-            reason = "composer.json pins PHP %s (config.platform.php); Adobe lists %s for it." % (
-                platform_php, releases[e["version"]]["PHP"])
-        out.append({"version": e["version"], "state": e["state"], "compatible": reason is None, "reason": reason,
-                    "note": "Needs a repo.magento.com entitlement for Adobe Commerce." if edition == "enterprise" else None})
+        compatible = e["state"] != "published"
+        target_php = (cat.get(e["version"]) or e["pins"] or {}).get("PHP_VERSION")
+        out.append({
+            "version": e["version"], "state": e["state"], "compatible": compatible,
+            "reason": None if compatible else e["note"],
+            "phpChange": {"from": platform_php, "to": target_php}
+            if compatible and platform_php and target_php and platform_php != target_php else None,
+            "note": "Needs a repo.magento.com entitlement for Adobe Commerce." if edition == "enterprise" else None,
+        })
     eligible = [r["version"] for r in out if r["compatible"]]
     return {
         "installed": installed,
@@ -342,8 +386,9 @@ def main(argv=None):
             print(note)
         return 0
     for e in derive(load().get("releases") or {}, args.catalog):
-        print("\t".join((e["version"], e["state"], e["note"] or "")) if args.tsv else
-              "%-12s %-10s %s" % (e["version"], e["state"], e["note"] or ""))
+        note = (e["note"] or "").replace("\t", " ")
+        print("\t".join((e["version"], e["state"], note)) if args.tsv else
+              "%-12s %-10s %s" % (e["version"], e["state"], note))
     return 0
 
 

@@ -183,12 +183,10 @@ if [ "$FRESH_INSTALL" = 1 ]; then
 
     # Version-specific commands from the m2 catalog (base, then patch).
     if [ "$FRESH_SOURCE" = 1 ]; then
-        for hook in "$M2_BASE_DIR/post-install" "${M2_PATCH_DIR:+$M2_PATCH_DIR/post-install}"; do
-            if [ -n "$hook" ] && [ -x "$hook" ]; then
-                log "Running ${hook#"$PLATFORM_DIR/"} ..."
-                PLATFORM_DIR="$PLATFORM_DIR" MAGENTO_VERSION="$MAGENTO_VERSION" "$hook"
-            fi
-        done
+        while IFS= read -r hook; do
+            log "Running ${hook#"$PLATFORM_DIR/"} ..."
+            PLATFORM_DIR="$PLATFORM_DIR" MAGENTO_VERSION="$MAGENTO_VERSION" "$hook"
+        done < <(m2_hooks post-install)
     fi
 else
     log "✓ Existing Magento installation detected"

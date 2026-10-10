@@ -61,8 +61,9 @@ wizards offer it anyway, if it's safe to guess its stack versions:
 - For each release with no folder here, on a line that has one (`m2/2.4.8/`), it takes the stack
   versions of the newest catalogued release on that line and checks every one against Adobe's list
   for the new release, the same way `bin/m2/check-requirements` does.
-- Only when all pass is the release written as `m2/<base>/pN/version.env` under
-  `${XDG_CACHE_HOME:-~/.cache}/platform-releases/` (with a `# Derived from …` header) and offered
+- Only when all pass is the release written as `<base>/pN/version.env` under
+  `${XDG_CACHE_HOME:-~/.cache}/platform-releases/m2-<id>/` — one folder per catalog, so checkouts
+  with different `m2/` folders never mix — (with a `# Derived from …` header) and offered
   in the menus — labelled "new: versions from 2.4.8-p5, checked against Adobe's requirements", and
   pre-selected when it's the newest.
 - A release whose check fails, or on a line with no folder here (2.4.10), isn't offered:

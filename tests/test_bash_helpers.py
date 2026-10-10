@@ -1,6 +1,7 @@
 """Small bash helpers that guard user input on its way into files, sed and
 the filesystem: bin/lib/env.sh and bin/lib/db-backup.sh."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -108,9 +109,11 @@ class CatalogMenus(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp(prefix="m2-catalog-")
         self.repo = os.path.join(self.d, "repo")
-        shutil.copytree(os.path.join(helpers.REPO, "m2"), os.path.join(self.repo, "m2"))
+        helpers.write_catalog(os.path.join(self.repo, "m2"))
         self.cache = os.path.join(self.d, "cache")
-        self.derived = os.path.join(self.cache, "platform-releases", "m2")
+        # releases.derived_dir: one tree per catalog, named by its real path.
+        digest = hashlib.sha1(os.path.realpath(os.path.join(self.repo, "m2")).encode()).hexdigest()[:12]
+        self.derived = os.path.join(self.cache, "platform-releases", "m2-" + digest)
 
     def tearDown(self):
         shutil.rmtree(self.d, ignore_errors=True)
@@ -155,6 +158,22 @@ class CatalogMenus(unittest.TestCase):
         self.assertEqual(patch_dir, os.path.join(self.derived, "2.4.8", "p6"))
         self.assertEqual(p.stdout.splitlines()[1], "2.4.8-p6")
 
+    def test_derived_dir_matches_releases_py(self):
+        p, _ = self.sh('echo "$M2_DERIVED_DIR"')
+        self.assertEqual(p.stdout.strip(), self.derived)
+
+    def test_hooks_only_from_the_repo(self):
+        self.derive("2.4.8-p6")
+        for d in (os.path.join(self.repo, "m2", "2.4.8"), os.path.join(self.derived, "2.4.8", "p6")):
+            helpers.write(os.path.join(d, "post-install"), "#!/bin/sh\n", 0o755)
+        p, _ = self.sh('m2_select_detected 2.4.8-p6 && m2_hooks post-install')
+        self.assertEqual(p.stdout.split(), [os.path.join(self.repo, "m2", "2.4.8", "post-install")])
+
+    def test_folder_without_version_env_is_not_a_patch(self):
+        os.makedirs(os.path.join(self.repo, "m2", "2.4.8", "p9"))
+        p, _ = self.sh("m2_list_versions")
+        self.assertNotIn("2.4.8-p9", p.stdout)
+
     def test_version_labels(self):
         self.derive("2.4.8-p6")
         p, _ = self.sh('m2_version_label 2.4.8-p6; echo; m2_version_label 2.4.8-p5; echo; m2_version_label 2.4.9')
@@ -174,7 +193,7 @@ class CatalogMenus(unittest.TestCase):
         p, _ = self.sh('m2_select_detected 2.4.8-p7 && echo "patch=[$M2_PATCH_DIR]"')
         self.assertIn("patch=[]", p.stdout)  # neither: the base release's pins, as before
 
-    def test_refresh_offline_only_notes(self):
+    def test_refresh_without_python_only_notes(self):
         p, _ = self.sh("PATH=/nonexistent-only-builtins; releases_refresh; echo done")
         self.assertIn("Couldn't check Adobe", p.stdout)
         self.assertIn("done", p.stdout)
