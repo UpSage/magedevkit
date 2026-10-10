@@ -1,6 +1,6 @@
 // MageDevKit dashboard, part 2 of 5: the overview and one environment's
-// page — Overview, Containers, Magento, Workflows, Pipeline, Logs and
-// Operations tabs. Uses dash-core.js; see its header for the load order.
+// page — Overview, Containers, Magento (with the Magento releases card and
+// banner), Workflows, Pipeline, Logs and Operations tabs. Uses dash-core.js; see its header for the load order.
 'use strict';
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,8 @@ function EnvCard(env) {
         Badge(stackText, stackVariant),
         running ? Badge(running.label || running.kind, 'secondary', 'loader', { spin: true })
           : env.lock && env.lock.held ? Badge('Busy', 'warning', 'loader', { spin: true }) : null,
-        env.readonly ? Badge('Read-only', 'outline') : null)),
+        env.readonly ? Badge('Read-only', 'outline') : null,
+        env.releaseUpdate ? Badge(`Magento ${env.releaseUpdate}`, 'warning', 'download') : null)),
     CardContent(
       Fields(
         Field('Magento', env.magentoVersion.value),
@@ -95,6 +96,7 @@ function renderEnvPage() {
 
   const banners = [ErrorBanner()];
   if (env.readonly) banners.push(Alert({ iconName: 'info', title: 'Read-only' }, h('p', { text: env.readonly })));
+  banners.push(ReleaseBanner(env));
   if (env.lock && env.lock.held) {
     banners.push(Alert({ variant: 'warning', iconName: 'loader', title: 'An operation is running in this checkout' },
       h('p', { text: env.lock.text || 'The checkout lock (.wizard.lock) is held.' }),
@@ -302,6 +304,7 @@ function MagentoTab(env) {
   const rebuildOk = rebuildWf.available && !envBlocked(env);
   return h('div', { class: 'space-y-4' },
     stopped ? Alert({ variant: 'warning', iconName: 'alert', title: 'PHP-FPM isn’t running' }, h('p', { text: 'Magento commands run inside the php container — start the environment first.' })) : null,
+    ReleasesCard(env),
     h('div', { class: 'grid grid-cols-1 gap-4 md:grid-cols-2' },
       ActionCard('Build Magento (code only)', 'setup:upgrade → setup:di:compile → setup:static-content:deploy -f → cache:flush, with maintenance mode on. The containers aren’t touched — use it after CSS/JS, layout or code changes.',
         [btn('magento_build', 'Build Magento', 'default')]),
@@ -327,6 +330,90 @@ function MagentoTab(env) {
         [Button({ variant: 'outline', size: 'sm', iconName: 'rotateCw', label: 'Full rebuild', disabled: !rebuildOk,
           onClick: () => startWorkflow(env, 'rebuild', {}, { label: 'Full rebuild' }) })]),
       OwnershipCard(env, ro)));
+}
+
+// -- Magento releases -----------------------------------------------------------
+// From the dashboard's copy of Adobe's release list (releases.py), checked
+// against this environment's m2/ catalog, stack and composer.json. The page
+// only points at the version wizard — it never upgrades anything itself.
+
+const RELEASE_ROWS = 10;
+
+function releaseDismissKey(env) {
+  return `release-dismissed:${env.id}`;
+}
+function releaseDismissed(env, version) {
+  try { return localStorage.getItem(releaseDismissKey(env)) === version; } catch (e) { return false; }
+}
+function dismissRelease(env, version) {
+  try { localStorage.setItem(releaseDismissKey(env), version); } catch (e) { /* ignore */ }
+  render();
+}
+
+function VersionWizardButton(env) {
+  const wf = (env.workflows || {}).version || {};
+  return Button({ size: 'sm', iconName: 'external', label: 'Open the version wizard',
+    disabled: !!env.readonly || !wf.available || envBlocked(env), onClick: () => startWorkflow(env, 'version') });
+}
+
+// "Magento 2.4.8-p6 is available" — once per version: dismissing it hides
+// it until a newer one comes (remembered in this browser only).
+function ReleaseBanner(env) {
+  const r = env.releases;
+  const v = r && r.latestCompatible;
+  if (!v || releaseDismissed(env, v)) return null;
+  const rel = r.releases.find((x) => x.version === v) || {};
+  return Alert({ variant: 'success', iconName: 'download', title: `Magento ${v} is available`, onDismiss: () => dismissRelease(env, v) },
+    h('p', { text: `It’s compatible with this stack${rel.state === 'derived' ? ' — its stack versions come from the newest catalogued patch, checked against Adobe’s requirements' : ''}. The version wizard takes a snapshot first, so the upgrade can be rolled back.${rel.note ? ` ${rel.note}` : ''}` }),
+    h('div', { class: 'pt-1' }, VersionWizardButton(env)));
+}
+
+async function checkReleases() {
+  const res = await busyApi('/api/releases/refresh', {});
+  if (!res.ok) return showError('The release check didn’t run', res);
+  toast(res.data.lastError ? 'Couldn’t reach Adobe — showing the last copy' : 'Release list updated', res.data.lastError ? 'warning' : 'success');
+  refresh();
+}
+
+function ReleaseBadge(rel) {
+  if (rel.compatible) return Badge('Compatible', 'success', 'check');
+  if (rel.state === 'published') return Badge('Not offered', 'secondary');
+  return Badge('Not compatible', 'destructive');
+}
+
+function ReleasesCard(env) {
+  const r = env.releases;
+  if (!r) {
+    return Card({}, CardHeader(CardTitle('Magento releases'), CardDescription(env.magentoVersion.value
+      ? 'The release data can’t be read right now.' : 'Shown once Magento is installed (its version comes from composer.lock).')));
+  }
+  const check = r.check || {};
+  const checked = check.fetchedAt ? `Adobe’s release list checked ${when(check.fetchedAt)}` : 'Adobe’s release list hasn’t been checked yet — the m2/ catalog only';
+  const rows = r.releases.slice(0, RELEASE_ROWS);
+  return Card({},
+    CardHeader(CardTitle('Magento releases'),
+      CardDescription(`${checked}.${check.refreshing ? ' Checking now…' : ''}`),
+      CardAction(Button({ variant: 'outline', size: 'sm', iconName: 'rotateCw', label: 'Check now',
+        disabled: S.busy || !!check.refreshing, onClick: checkReleases }))),
+    CardContent(h('div', { class: 'space-y-4' },
+      check.lastError ? Alert({ variant: 'warning', iconName: 'wifiOff', title: 'The last check couldn’t reach Adobe' },
+        h('p', { text: `${check.lastError}. Showing ${check.fetchedAt ? 'the copy from before' : 'the m2/ catalog only'}.` })) : null,
+      DescriptionList([
+        ['Installed', r.installed, env.magentoEdition === 'enterprise' ? 'Adobe Commerce' : null],
+        ['Latest release', r.latestPublished],
+        ['Latest you can move to', r.latestCompatible || 'Nothing newer that fits this stack'],
+      ]),
+      rows.length ? Table(
+        TableHeader(TableRow(TableHead('Newer release'), TableHead('Status'), TableHead('Details'))),
+        TableBody(rows.map((x) => TableRow(
+          TableCell(h('span', { class: 'flex items-center gap-2' }, x.version, x.state === 'derived' ? Badge('New', 'outline') : null)),
+          TableCell(ReleaseBadge(x)),
+          TableCell(x.reason || x.note || (x.state === 'derived'
+            ? 'Stack versions from the newest catalogued patch, checked against Adobe’s requirements.' : 'In the m2/ catalog.'),
+          'text-muted-foreground whitespace-normal'))))) : null,
+      r.releases.length > RELEASE_ROWS ? h('p', { class: 'text-muted-foreground text-xs', text: `…and ${r.releases.length - RELEASE_ROWS} more.` }) : null)),
+    r.latestCompatible ? CardFooter(VersionWizardButton(env),
+      h('span', { class: 'text-muted-foreground text-xs', text: 'Upgrades only through the wizard: review, snapshot, then the upgrade.' })) : null);
 }
 
 // composer update: everything, or only the packages typed in.

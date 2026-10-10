@@ -649,6 +649,15 @@ the sidebar. The platform version (the repo's `VERSION` file) is at the foot of 
       doesn't make a change live;
     - **Full rebuild**: what the refresh and version wizards run, in the wizard. On top of the build
       it resets compiled code with php/nginx/varnish restarts, applies the platform config and reindexes;
+    - **Magento releases**: the installed version, the latest release, and the latest one this
+      environment can move to, with every newer release marked compatible, not compatible (e.g.
+      composer.json's `config.platform.php` isn't in Adobe's PHP list for it) or not offered (no
+      catalog line, or its stack check failed). The list is Adobe's system requirements file,
+      checked in the background at most once a day; **Check now** checks right away. Offline it
+      shows the last copy, or the `m2/` catalog alone. When a newer compatible release exists, the
+      environment page shows a **"Magento X is available"** banner (dismissed per version, in this
+      browser), and the overview card a badge. Upgrading always goes through the version wizard —
+      the dashboard never starts one by itself;
   - **Modules**: every module from `app/etc/config.php`, with its status, package, version and
     whether it's Magento core (Magento's own modules and everything the product metapackage
     requires). Search by module or package name, and filter by status and by source — each module is
@@ -732,6 +741,7 @@ browser ──> dashboard.py   (127.0.0.1 only; status + JSON API)
               │    └─ oprun.py    detached runner: one operation, its log and record
               ├─ gitrepo.py the Git tab        pipeline.py  the Pipeline tab
               ├─ modules.py the Modules tab (reads config.php, module.xml, composer.lock)
+              ├─ releases.py Magento releases from Adobe (shared with the wizards' version menus)
               └─ webcore.py shared with the wizard server: auth, login/static files, headers,
                             redaction, records, child-process environment (no tokens)
                     │
@@ -861,6 +871,8 @@ against fake instances and a fake `docker`, covering:
   may run) and `bin/local/magento-module` (`tests/test_magento_module.py`: the command order with
   and without the build, production, the update check, dry runs, and putting composer.json and
   composer.lock back when composer fails);
+- Magento releases (`tests/test_releases.py`: Adobe's file, the stack check behind a derived
+  entry, offline fallback, what an environment can move to);
 - `kit.js` and the dashboard's tabs in a real browser (`tests/test_js.py` runs
   `tests/js/kit-tests.html` and `tests/js/dash-tests.html` in headless Chrome/Chromium; skipped
   when none is installed).
@@ -1017,6 +1029,10 @@ requirements file, at most once a day): with the stack versions of the newest ca
 that line, only when every one passes Adobe's requirements for the new patch. A folder in `m2/`
 always wins; offline the menus are the catalog alone. A new minor line (e.g. 2.4.10) still needs
 a catalog folder.
+
+**Release notifications.** The Magento tab has a **Magento releases** card (what this environment
+can move to, and why a release doesn't fit), the environment page a dismissable "Magento X is
+available" banner, and the overview card a badge — all pointing at the version wizard.
 
 **Module updates.** **Check for updates** on the Modules tab (`mdk module check-updates`) shows
 which packages have a newer version. Update one, or select several: a dry run first, then the

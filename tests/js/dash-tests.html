@@ -177,6 +177,33 @@ async function run() {
   const q2 = app.querySelector('input[type=search]');
   q2.value = 'Acme_M11'; q2.dispatchEvent(new Event('input'));
   check('filter resets to page 1', S.modulesPage === 1 && names().length === 10 && !pager(), names().length);
+
+  // Magento releases: the card, the banner (dismissed per version), the overview badge.
+  try { localStorage.removeItem('release-dismissed:shop'); } catch (e) { /* ignore */ }
+  const REL = Object.assign({}, ENV, {
+    magentoVersion: { value: '2.4.8-p3' }, magentoEdition: 'community', workflows: { version: { available: true } },
+    releases: { installed: '2.4.8-p3', latestPublished: '2.4.9', latestCompatible: '2.4.8-p6', eligible: ['2.4.8-p6', '2.4.8-p5'],
+      check: { fetchedAt: new Date().toISOString(), lastError: null, stale: false, refreshing: false },
+      releases: [
+        { version: '2.4.9', state: 'catalog', compatible: false, reason: 'composer.json pins PHP 8.3 (config.platform.php); Adobe lists 8.5 for it.', note: null },
+        { version: '2.4.8-p6', state: 'derived', compatible: true, reason: null, note: null },
+        { version: '2.4.8-p5', state: 'catalog', compatible: true, reason: null, note: null },
+      ] },
+  });
+  const card = ReleasesCard(REL);
+  check('releases card', card.textContent.includes('Latest you can move to') && card.textContent.includes('2.4.8-p6')
+    && card.textContent.includes('Not compatible') && card.textContent.includes('config.platform.php'));
+  check('releases card wizard button', [...card.querySelectorAll('button')].some((b) => b.textContent.includes('Open the version wizard')));
+  const banner = ReleaseBanner(REL);
+  check('release banner', banner && banner.textContent.includes('Magento 2.4.8-p6 is available'));
+  window.render = () => {};
+  banner.querySelector('button[title="Dismiss"]').click();
+  check('banner dismissed for that version', ReleaseBanner(REL) === null);
+  check('a newer one shows again', !!ReleaseBanner(Object.assign({}, REL, { releases: Object.assign({}, REL.releases, { latestCompatible: '2.4.8-p7' }) })));
+  check('no banner when nothing fits', ReleaseBanner(Object.assign({}, REL, { releases: Object.assign({}, REL.releases, { latestCompatible: null }) })) === null);
+  const offline = ReleasesCard(Object.assign({}, REL, { releases: Object.assign({}, REL.releases, { check: { fetchedAt: null, lastError: 'URLError: refused' } }) }));
+  check('offline card', offline.textContent.includes('couldn’t reach Adobe') && offline.textContent.includes('m2/ catalog only'));
+  check('not installed card', ReleasesCard(Object.assign({}, REL, { releases: null, magentoVersion: { value: null } })).textContent.includes('once Magento is installed'));
 }
 
 run().catch((e) => check('run', false, String(e && e.stack || e))).finally(() => {

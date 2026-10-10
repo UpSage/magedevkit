@@ -329,6 +329,37 @@ def magento_version_from_lock(magento_dir):
     return CACHE.get(("lock", path, mtime), 3600, parse)
 
 
+def magento_edition(magento_dir):
+    """community / enterprise, from the product metapackage in composer.lock."""
+    path = os.path.join(magento_dir, "composer.lock")
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+
+    def parse():
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            return None
+        m = re.search(r'"name":\s*"magento/product-(community|enterprise)-edition"', text)
+        return m.group(1) if m else None
+
+    return CACHE.get(("edition", path, mtime), 3600, parse)
+
+
+def project_php(magento_dir):
+    """composer.json config.platform.php as major.minor ("8.3"), or None."""
+    try:
+        with open(os.path.join(magento_dir, "composer.json"), encoding="utf-8") as f:
+            php = ((json.load(f).get("config") or {}).get("platform") or {}).get("php")
+    except (OSError, ValueError, AttributeError):
+        return None
+    m = re.match(r"^(\d+\.\d+)", php) if isinstance(php, str) else None
+    return m.group(1) if m else None
+
+
 ENV_PHP_MODE_RE = re.compile(r"""['"]MAGE_MODE['"]\s*=>\s*['"](\w+)['"]""")
 
 
@@ -607,6 +638,7 @@ def summarize(e, conts, detail=False, docker_ok=True):
         "codeDir": e.code_dir,
         "magentoDir": e.magento_dir,
         "magentoVersion": {"value": mversion, "source": msource},
+        "magentoEdition": magento_edition(e.magento_dir),
         "phpVersion": e.value("PHP_VERSION"),
         "mode": {"configured": e.env.get("MAGENTO_MODE") or None, "actual": mode, "note": mode_note},
         "ownership": e.env.get("FILE_OWNERSHIP") or "single",

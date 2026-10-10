@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 import helpers
@@ -265,6 +266,43 @@ class DashboardApi(unittest.TestCase):
                     {"packages": ["amasty/base; rm"]}, {"packages": ["v/p%d" % i for i in range(101)]}):
             code, _, _ = self.dash.request("POST", "/api/environments/stack-b/actions/module_update", bad)
             self.assertEqual(code, 400, bad)
+
+    def test_magento_releases(self):
+        # stack-c: Magento 2.4.8-p3, composer.json pinning PHP 8.3; its repo has the real m2/ catalog.
+        shutil.copytree(os.path.join(helpers.REPO, "m2"), os.path.join(self.repo, "m2"), dirs_exist_ok=True)
+        md = os.path.join(self.c, "magento")
+        helpers.write(os.path.join(md, "composer.lock"),
+                      '{"packages": [{"name": "magento/product-community-edition", "version": "2.4.8-p3"}]}')
+        helpers.write(os.path.join(md, "composer.json"), '{"config": {"platform": {"php": "8.3.20"}}}')
+        php = {"PHP": "8.4, 8.3", "MariaDB": "11.4, 11.8", "OpenSearch": "3", "Valkey": "8.1", "RabbitMQ": "4.3",
+               "Varnish": "8", "nginx": "1.30", "Composer": "2.10"}
+        cache = os.path.join(self.dash.tmp, "cache", "platform-releases")
+        helpers.write(os.path.join(cache, "releases.json"), json.dumps({
+            "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "lastError": None,
+            "releases": {"2.4.8-p5": php, "2.4.8-p6": php, "2.4.9": dict(php, PHP="8.5")}}))
+        code, body, _ = self.dash.request("GET", "/api/environments/stack-c")
+        self.assertEqual(code, 200, body)
+        r = body["releases"]
+        self.assertEqual(r["installed"], "2.4.8-p3")
+        self.assertEqual(r["latestPublished"], "2.4.9")
+        self.assertEqual(r["latestCompatible"], "2.4.8-p6")
+        self.assertEqual(r["eligible"], ["2.4.8-p6", "2.4.8-p5", "2.4.8-p4"])
+        nine = [x for x in r["releases"] if x["version"] == "2.4.9"][0]
+        self.assertIn("config.platform.php", nine["reason"])  # PHP 8.3 pinned, 2.4.9 needs 8.5
+        self.assertFalse(r["check"]["stale"])
+        self.assertEqual(body["magentoEdition"], "community")
+        code, body, _ = self.dash.request("GET", "/api/environments")
+        self.assertEqual({e["id"]: e["releaseUpdate"] for e in body["environments"]}["stack-c"], "2.4.8-p6")
+        # Check now with no network: 200, the error recorded, the old copy kept.
+        code, body, _ = self.dash.request("POST", "/api/releases/refresh", {})
+        self.assertEqual(code, 200, body)
+        self.assertTrue(body["lastError"])
+        self.assertTrue(body["fetchedAt"])
+        code, body, _ = self.dash.request("GET", "/api/releases")
+        self.assertEqual(code, 200, body)
+        self.assertEqual(self.dash.request("POST", "/api/releases/refresh", {}, headers={"X-Wizard": None})[0], 403)
+        code, body, _ = self.dash.request("GET", "/api/environments/stack-c")
+        self.assertEqual(body["releases"]["latestCompatible"], "2.4.8-p6")
 
     def test_ownership_workflow(self):
         code, body, _ = self.dash.request("POST", "/api/environments/stack-b/workflows/ownership", {"model": "two-owner"})
