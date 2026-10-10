@@ -239,6 +239,7 @@ esac
 ui_step version 4
 if [ "$ACTION" = upgrade ]; then
     [ -n "$EDITION" ] || fail "magento/composer.json doesn't require magento/product-community-edition or magento/product-enterprise-edition — this store's version can't be switched with the m2 catalog."
+    releases_refresh
     TARGETS=()
     while IFS= read -r v; do
         version_lt "$CURRENT_VERSION" "$v" && TARGETS+=("$v")
@@ -251,7 +252,8 @@ if [ "$ACTION" = upgrade ]; then
         printf '%s\n' "${TARGETS[@]}" | grep -qxF "$TARGET_VERSION" \
             || fail "PRESET_TARGET_VERSION=$TARGET_VERSION isn't a newer version in the m2/ catalog (newer ones: ${TARGETS[*]})."
     else
-        LABELS=("${TARGETS[@]}")
+        LABELS=()
+        for v in "${TARGETS[@]}"; do LABELS+=("$(m2_version_label "$v")"); done
         LABELS[-1]+=" (latest, default)"
         CHOICE="$(prompt_menu "Upgrade Magento $CURRENT_VERSION to which version?" "${#TARGETS[@]}" "${LABELS[@]}")"
         TARGET_VERSION="${TARGETS[$((CHOICE - 1))]}"

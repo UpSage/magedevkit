@@ -273,7 +273,10 @@ database:
 1. Pick the **version** and **security patch** — menus are built from the folders in
    [`m2/`](m2/README.md) (`m2/2.4.8/`, `m2/2.4.8/p1` … `p5`, `m2/2.4.9/`, …). Adding a folder adds a
    menu entry; each holds a `version.env` (`MAGENTO_VERSION`, optional `MAGENTO_PACKAGE` and stack
-   pins) and optionally an executable `post-install` hook for version-specific commands.
+   pins) and optionally an executable `post-install` hook for version-specific commands. A newer
+   patch Adobe has published but `m2/` doesn't have yet is offered too — and pre-selected as the
+   latest — when the stack versions of the newest catalogued patch on its line pass Adobe's
+   requirements for it (see "New releases" in [`m2/README.md`](m2/README.md)).
 2. Give your **repo.magento.com credentials** — an existing `auth.json`, or the public/private keys.
    They're kept outside `magento/` until the download finishes (create-project needs an empty
    directory), then saved to `magento/auth.json`.
@@ -365,7 +368,8 @@ a dashboard action. The work itself lives under `bin/lib/` (`sync-db-config-engi
 version — for a fresh install and an imported store alike. The current version is read from
 `magento/composer.lock` and recorded as `MAGENTO_VERSION` in `.env`.
 
-- **Upgrade** — to any newer version or patch in the `m2/` catalog. Review screen (stack changes
+- **Upgrade** — to any newer version or patch in the `m2/` catalog, plus newer patches Adobe has
+  published that pass the same check as in setup (labelled "new: versions from …"). Review screen (stack changes
   included) → typed confirmation (browser) → **snapshot** → maintenance on → the target's stack
   pins (PHP, MariaDB, OpenSearch, … — containers rebuilt when they change; a `config.platform.php`
   pin in composer.json moves along with PHP) → `composer require-commerce` (or `composer require`
@@ -1006,6 +1010,13 @@ changes nothing, `.env` included. The setup review shows which site a local dump
 with search and filters, and turns modules on or off — with Magento's own dependency check, and
 the Magento build afterwards by default (always in production mode). In a terminal:
 `mdk module enable|disable [--build] Vendor_Module …`.
+
+**New Magento releases in the wizards.** Setup's version menu and the version wizard's upgrade
+menu also offer patches Adobe has published but `m2/` doesn't have yet (read from Adobe's system
+requirements file, at most once a day): with the stack versions of the newest catalogued patch on
+that line, only when every one passes Adobe's requirements for the new patch. A folder in `m2/`
+always wins; offline the menus are the catalog alone. A new minor line (e.g. 2.4.10) still needs
+a catalog folder.
 
 **Module updates.** **Check for updates** on the Modules tab (`mdk module check-updates`) shows
 which packages have a newer version. Update one, or select several: a dry run first, then the

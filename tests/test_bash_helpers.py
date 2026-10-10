@@ -100,6 +100,86 @@ class BashHelpers(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.d)), ["app-3.sql.gz", "app-4.sql.gz", "other-1.sql.gz"])
 
 
+class CatalogMenus(unittest.TestCase):
+    """bin/lib/m2-catalog.sh with derived releases (releases.py writes them
+    under $XDG_CACHE_HOME/platform-releases/m2): menus, labels, defaults,
+    and the repo's own folders winning."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="m2-catalog-")
+        self.repo = os.path.join(self.d, "repo")
+        shutil.copytree(os.path.join(helpers.REPO, "m2"), os.path.join(self.repo, "m2"))
+        self.cache = os.path.join(self.d, "cache")
+        self.derived = os.path.join(self.cache, "platform-releases", "m2")
+
+    def tearDown(self):
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def derive(self, ver, src="2.4.8-p5"):
+        base, patch = ver.split("-")
+        helpers.write(os.path.join(self.derived, base, patch, "version.env"),
+                      "# Derived from %s + Adobe's system requirements (fetched x) by\nMAGENTO_VERSION=%s\nPHP_VERSION=8.4\n" % (src, ver))
+
+    def sh(self, script, answers=""):
+        """Runs with the catalog helpers; prompt_menu's questions are recorded
+        (question|default|labels) and answered from `answers`, one a line."""
+        asks, ans = os.path.join(self.d, "asks"), os.path.join(self.d, "answers")
+        helpers.write(ans, answers)
+        helpers.write(asks, "")
+        full = """PLATFORM_DIR=%s; source %s/m2-catalog.sh
+            ui_web() { return 0; }
+            exec 3<%s
+            ui_ask() { local IFS='|'; printf '%%s\\n' "$*" >> %s; local a; read -r a <&3 || a=''; printf '%%s' "$a"; }
+            %s""" % (self.repo, LIB, ans, asks, script)
+        p = subprocess.run(["bash", "-c", 'for f in ui env util; do source "%s/$f.sh"; done; %s' % (LIB, full)],
+                           cwd=self.d, capture_output=True, text=True, env=dict(os.environ, XDG_CACHE_HOME=self.cache))
+        return p, [l.split("|") for l in helpers.read(asks).splitlines()]
+
+    def test_without_derived_nothing_changes(self):
+        p, _ = self.sh("m2_list_versions")
+        self.assertEqual(p.stdout.split(), ["2.4.8", "2.4.8-p1", "2.4.8-p2", "2.4.8-p3", "2.4.8-p4", "2.4.8-p5", "2.4.9"])
+
+    def test_derived_patch_is_listed_labelled_and_default(self):
+        self.derive("2.4.8-p6")
+        p, _ = self.sh("m2_list_versions")
+        self.assertEqual(p.stdout.split()[-3:], ["2.4.8-p5", "2.4.8-p6", "2.4.9"])
+        # 2.4.8, then the default patch: the derived p6.
+        p, asks = self.sh('choose_magento_version; echo "$M2_BASE_DIR|$M2_PATCH_DIR"; m2_get MAGENTO_VERSION', answers="1\n\n")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        patch_menu = asks[1]
+        self.assertEqual(patch_menu[2], "7")  # (type, question, default, …) default = the last of base + p1…p6
+        self.assertEqual(patch_menu[-1], "2.4.8-p6 — new: versions from 2.4.8-p5, checked against Adobe's requirements (latest, default)")
+        self.assertEqual(patch_menu[-2], "2.4.8-p5")
+        base_dir, patch_dir = p.stdout.splitlines()[0].split("|")
+        self.assertEqual(base_dir, os.path.join(self.repo, "m2", "2.4.8"))
+        self.assertEqual(patch_dir, os.path.join(self.derived, "2.4.8", "p6"))
+        self.assertEqual(p.stdout.splitlines()[1], "2.4.8-p6")
+
+    def test_version_labels(self):
+        self.derive("2.4.8-p6")
+        p, _ = self.sh('m2_version_label 2.4.8-p6; echo; m2_version_label 2.4.8-p5; echo; m2_version_label 2.4.9')
+        self.assertEqual(p.stdout.splitlines(), ["2.4.8-p6 — new: versions from 2.4.8-p5, checked against Adobe's requirements",
+                                                 "2.4.8-p5", "2.4.9"])
+
+    def test_repo_folder_wins(self):
+        self.derive("2.4.8-p5", src="2.4.8-p4")
+        p, _ = self.sh('m2_select_detected 2.4.8-p5 && echo "$M2_PATCH_DIR"; m2_list_versions | grep -c 2.4.8-p5')
+        self.assertEqual(p.stdout.split(), [os.path.join(self.repo, "m2", "2.4.8", "p5"), "1"])
+
+    def test_detected_version_uses_derived_pins(self):
+        self.derive("2.4.8-p6")
+        p, _ = self.sh('m2_select_detected 2.4.8-p6 && echo "$M2_PATCH_DIR"; echo "$(m2_get MAGENTO_VERSION)"; m2_get MAGENTO_PACKAGE')
+        self.assertEqual(p.stdout.split(), [os.path.join(self.derived, "2.4.8", "p6"), "2.4.8-p6",
+                                            "magento/project-community-edition"])  # package from the repo's base
+        p, _ = self.sh('m2_select_detected 2.4.8-p7 && echo "patch=[$M2_PATCH_DIR]"')
+        self.assertIn("patch=[]", p.stdout)  # neither: the base release's pins, as before
+
+    def test_refresh_offline_only_notes(self):
+        p, _ = self.sh("PATH=/nonexistent-only-builtins; releases_refresh; echo done")
+        self.assertIn("Couldn't check Adobe", p.stdout)
+        self.assertIn("done", p.stdout)
+
+
 class ConfirmReplace(unittest.TestCase):
     """sync-db-config-engine.sh confirm_replace: never replaces a database on
     a default when nobody can answer."""

@@ -5,10 +5,68 @@
 # Expects PLATFORM_DIR, ENV_FILE, MAGENTO_DIR, set_env_var (bin/lib/env.sh)
 # and bin/lib/ui.sh's helpers.
 
+# Patches Adobe has published that the repo's m2/ doesn't have yet, with the
+# stack versions of the newest catalogued release on their line, checked
+# against Adobe's requirements (bin/lib/web-wizard/releases.py writes them
+# here). Same layout as m2/; a repo folder always wins.
+M2_DERIVED_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/platform-releases/m2"
+
+# releases_refresh — Adobe's release list for the version menus below: at
+# most one download a day, 5 s at most; offline (or without python3) the
+# menus are the m2/ catalog alone.
+releases_refresh() {
+    local note
+    if command -v python3 >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+        note="$(timeout 15 python3 -I "$PLATFORM_DIR/bin/lib/web-wizard/releases.py" refresh --if-stale --timeout 5 \
+            --catalog "$PLATFORM_DIR/m2" 2>/dev/null)" \
+            || note="Couldn't check Adobe for new Magento releases — using the m2/ catalog only."
+    else
+        note="Couldn't check Adobe for new Magento releases (needs python3) — using the m2/ catalog only."
+    fi
+    [ -z "$note" ] || log "$note"
+    return 0
+}
+
+# m2_patches BASE — its patch folders (p1, p2 …), the repo's and the derived
+# ones, oldest first, each once.
+m2_patches() {
+    local d
+    for d in "$PLATFORM_DIR/m2/$1" "$M2_DERIVED_DIR/$1"; do
+        [ -d "$d" ] || continue
+        find "$d" -mindepth 1 -maxdepth 1 -type d -name 'p*' -printf '%f\n'
+    done | sort -uV
+}
+
+# m2_patch_dir BASE PATCH — that patch's folder (the repo's if it has one,
+# else the derived one); blank if neither has a version.env.
+m2_patch_dir() {
+    local d
+    for d in "$PLATFORM_DIR/m2/$1/$2" "$M2_DERIVED_DIR/$1/$2"; do
+        [ -f "$d/version.env" ] && { printf '%s' "$d"; return 0; }
+    done
+    return 0
+}
+
+# m2_version_label VERSION — its menu label: the version, plus where the
+# stack versions come from when it's a derived entry (the " — " sub-line the
+# wizard page shows under the option).
+m2_version_label() {
+    local base="${1%%-*}" dir from
+    [ "$1" != "$base" ] && dir="$(m2_patch_dir "$base" "${1#*-}")"
+    if [ -n "${dir:-}" ] && [ "${dir#"$M2_DERIVED_DIR/"}" != "$dir" ]; then
+        from="$(sed -n 's/^# Derived from \([^ ]*\).*/\1/p' "$dir/version.env" | head -1)"
+        printf "%s — new: versions from %s, checked against Adobe's requirements" "$1" "${from:-the catalog}"
+    else
+        printf '%s' "$1"
+    fi
+}
+
 # Version catalog: platform/m2/<version>/version.env, plus optional
 # m2/<version>/p<N>/version.env security patches loaded on top (see
-# m2/README.md). Menus are built from the folders, so adding one adds an
-# entry. Sets M2_BASE_DIR / M2_PATCH_DIR (blank for the base release).
+# m2/README.md), plus derived patches (M2_DERIVED_DIR) for that line. Menus
+# are built from the folders, so adding one adds an entry; the newest —
+# derived or not — is the default. Sets M2_BASE_DIR / M2_PATCH_DIR (blank
+# for the base release).
 choose_magento_version() {
     local versions patches labels choice base p
     mapfile -t versions < <(find "$PLATFORM_DIR/m2" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V)
@@ -22,13 +80,14 @@ choose_magento_version() {
     M2_PATCH_DIR=""
 
     # Option 1 is the base release; patches follow as 2.4.8-p1, -p2, ...
-    mapfile -t patches < <(find "$M2_BASE_DIR" -mindepth 1 -maxdepth 1 -type d -name 'p*' -printf '%f\n' | sort -V)
+    # A derived one says where its stack versions come from.
+    mapfile -t patches < <(m2_patches "$base")
     if [ "${#patches[@]}" -gt 0 ]; then
         labels=("$base — original release, no patches")
-        for p in "${patches[@]}"; do labels+=("$base-$p"); done
+        for p in "${patches[@]}"; do labels+=("$(m2_version_label "$base-$p")"); done
         labels[-1]+=" (latest, default)"
         choice="$(prompt_menu "Which $base release? (patches are security/bug fixes on top of $base)" "${#labels[@]}" "${labels[@]}")"
-        [ "$choice" -gt 1 ] && M2_PATCH_DIR="$M2_BASE_DIR/${patches[$((choice - 2))]}"
+        [ "$choice" -gt 1 ] && M2_PATCH_DIR="$(m2_patch_dir "$base" "${patches[$((choice - 2))]}")"
     fi
     return 0
 }
@@ -97,9 +156,9 @@ stack_pin() {
 }
 
 # "2.4.8-p3" -> sets M2_BASE_DIR/M2_PATCH_DIR if the catalog has that
-# folder; returns 1 otherwise. A patch with no folder of its own (e.g. a
-# newer -p6 than the catalog knows) falls back to its base release's pins —
-# stack requirements rarely change between patches.
+# folder (or a derived one); returns 1 otherwise. A patch with neither (e.g.
+# a newer -p6 than the catalog knows, offline) falls back to its base
+# release's pins — stack requirements rarely change between patches.
 m2_select_detected() {
     local ver="$1" base patch=""
     base="${ver%%-*}"
@@ -108,9 +167,8 @@ m2_select_detected() {
     M2_BASE_DIR="$PLATFORM_DIR/m2/$base"
     M2_PATCH_DIR=""
     if [ -n "$patch" ]; then
-        if [ -f "$M2_BASE_DIR/$patch/version.env" ]; then
-            M2_PATCH_DIR="$M2_BASE_DIR/$patch"
-        else
+        M2_PATCH_DIR="$(m2_patch_dir "$base" "$patch")"
+        if [ -z "$M2_PATCH_DIR" ]; then
             log "⚠ No m2/ catalog entry for $ver — using $base's stack versions."
         fi
     fi
@@ -201,15 +259,16 @@ apply_m2_stack_pins() {
 }
 
 # Every catalog version, oldest first, one per line: each base release
-# followed by its patches (2.4.8, 2.4.8-p1, ..., 2.4.9).
+# followed by its patches, derived ones included (2.4.8, 2.4.8-p1, ...,
+# 2.4.9).
 m2_list_versions() {
     local base p
     while IFS= read -r base; do
         [ -f "$PLATFORM_DIR/m2/$base/version.env" ] || continue
         printf '%s\n' "$base"
         while IFS= read -r p; do
-            [ -f "$PLATFORM_DIR/m2/$base/$p/version.env" ] && printf '%s-%s\n' "$base" "$p"
-        done < <(find "$PLATFORM_DIR/m2/$base" -mindepth 1 -maxdepth 1 -type d -name 'p*' -printf '%f\n' | sort -V)
+            [ -n "$(m2_patch_dir "$base" "$p")" ] && printf '%s-%s\n' "$base" "$p"
+        done < <(m2_patches "$base")
     done < <(find "$PLATFORM_DIR/m2" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V)
     return 0
 }

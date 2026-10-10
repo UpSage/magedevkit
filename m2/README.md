@@ -51,6 +51,28 @@ existing checkout's version from `magento/composer.lock`. It never downgrades an
 data volume, and offers to drop the OpenSearch volume on a major change (search is rebuilt by
 reindexing).
 
+## New releases without a folder (derived)
+
+When Adobe publishes a patch the catalog doesn't have yet (say 2.4.8-p6), the setup and version
+wizards offer it anyway, if it's safe to guess its stack versions:
+
+- At the start of the version menu, `bin/lib/web-wizard/releases.py` reads Adobe's data file (the
+  one above) — at most once a day, 5 seconds at most. Offline, nothing changes.
+- For each release with no folder here, on a line that has one (`m2/2.4.8/`), it takes the stack
+  versions of the newest catalogued release on that line and checks every one against Adobe's list
+  for the new release, the same way `bin/m2/check-requirements` does.
+- Only when all pass is the release written as `m2/<base>/pN/version.env` under
+  `${XDG_CACHE_HOME:-~/.cache}/platform-releases/` (with a `# Derived from …` header) and offered
+  in the menus — labelled "new: versions from 2.4.8-p5, checked against Adobe's requirements", and
+  pre-selected when it's the newest.
+- A release whose check fails, or on a line with no folder here (2.4.10), isn't offered:
+  `python3 bin/lib/web-wizard/releases.py list --catalog m2` shows each one with the reason.
+
+A folder here always wins over a derived one — adding `m2/2.4.8/p6/` replaces it (and its
+`post-install`/`post-upgrade` hooks, which derived entries never have; the base folder's still
+run). Derived pins are only as good as Adobe's data, so `bin/m2/check-requirements` and a real
+folder remain the way to settle a release for good.
+
 ## post-install hooks (optional)
 
 An executable `post-install` file in a version folder runs right after `setup:install` (and sample
