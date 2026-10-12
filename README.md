@@ -1018,6 +1018,14 @@ initializes the volume, and `app/etc/env.php` keeps its own copy. Either run the
   name and email on your commits.
 - **Pull** is always available on a branch that tracks origin.
 - **Update from origin** fast-forwards another local branch without switching to it.
+- **Commit** is always shown in the Staged column and enabled once something is staged; **Push N
+  commit(s)** also appears on the Recent commits card when commits there aren't on origin yet.
+
+**Running operations.** The dashboard shows the newest running operation — also after a reload, or
+when it was started from the terminal, a wizard or another tab (hiding it keeps it hidden). Its log
+stays at the bottom while it runs, through every refresh; scroll up to read and it stays put,
+scroll back down and it follows again. The Operations tab's log of a running operation updates the
+same way.
 
 ### 1.1.0 (2026-10-12)
 

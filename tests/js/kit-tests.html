@@ -50,7 +50,7 @@ async function run() {
   document.body.append(pre);
   setLogText(pre, Array(50).fill('line').join('\n'), true);
   check('setLogText sticks to bottom', pre.scrollTop > 0);
-  pre.scrollTop = 0;
+  pre.scrollTop = 0; pre.dispatchEvent(new Event('scroll'));  // the reader scrolls up
   setLogText(pre, Array(60).fill('line').join('\n'));
   check('setLogText leaves a scrolled-up reader', pre.scrollTop === 0, pre.scrollTop);
   pre.remove();
@@ -120,6 +120,31 @@ async function run() {
   check('ListBox', lb.getAttribute('role') === 'list' && lb.getAttribute('aria-label') === 'Paths'
     && lb.querySelectorAll('[role=listitem]').length === 2);
   check('ListRow header', ListRow({ header: true }, 'h').getAttribute('role') === null);
+
+  // Log <pre>: follows the end through a re-render (taken out and put back,
+  // which resets the browser's scroll), unless the reader scrolled up.
+  const log = LogBlock();
+  log.style.height = '50px'; log.style.overflow = 'auto'; log.style.whiteSpace = 'pre';
+  const lines = (n) => Array.from({ length: n }, (_, i) => `line ${i}`).join('\n');
+  const box = h('div'); document.body.append(box); box.append(log);
+  setLogText(log, lines(100));
+  const atEnd = () => log.scrollHeight - log.scrollTop - log.clientHeight < 2;
+  check('log starts at the end', atEnd(), log.scrollTop);
+  log.remove(); box.append(log);
+  check('re-insert resets scroll (why restoreLogScroll exists)', log.scrollTop === 0 || atEnd(), log.scrollTop);
+  restoreLogScroll(box);
+  check('restored to the end', atEnd(), log.scrollTop);
+  setLogText(log, lines(120));
+  check('new output followed', atEnd(), log.scrollTop);
+  log.scrollTop = 30; log.dispatchEvent(new Event('scroll'));
+  log.remove(); box.append(log);
+  setLogText(log, lines(140));
+  restoreLogScroll(box);
+  check('reader who scrolled up stays put', log.scrollTop === 30, log.scrollTop);
+  log.scrollTop = log.scrollHeight; log.dispatchEvent(new Event('scroll'));
+  setLogText(log, lines(160));
+  check('scrolling back down follows again', atEnd(), log.scrollTop);
+  box.remove();
 
   // userBusy: typing or an open dialog.
   const input = h('input'); document.body.append(input); input.focus();

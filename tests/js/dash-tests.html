@@ -264,6 +264,44 @@ async function run() {
   await tick();
   check('git: login posted with remember', gitPosts.length === 3 && gitPosts[2].body.username === 'octo'
     && gitPosts[2].body.token === 'ghp_x' && gitPosts[2].body.remember === true, JSON.stringify(gitPosts[2]));
+
+  // Commit: always shown, enabled once something is staged.
+  const commitBtn = () => [...app.querySelectorAll('button')].find((b) => /^Commit/.test(b.textContent.trim()));
+  S.git = Object.assign({}, GIT, { savedLogin: { username: 'octo' } });
+  app.replaceChildren(GitTab(ENV));
+  check('git: commit shown but disabled with nothing staged', commitBtn() && commitBtn().disabled);
+  S.git = Object.assign({}, GIT, { savedLogin: { username: 'octo' }, files: [{ path: 'a.txt', x: 'M', y: '.', staged: true, unstaged: false }] });
+  app.replaceChildren(GitTab(ENV));
+  check('git: commit enabled with a staged file', commitBtn() && !commitBtn().disabled && commitBtn().textContent.includes('Commit (1)'));
+  // Push next to the unpushed commits.
+  const pushIn = () => [...app.querySelectorAll('button')].filter((b) => /^Push \d+ commit/.test(b.textContent.trim()));
+  check('git: no push when all pushed', pushIn().length === 0);
+  S.git = Object.assign({}, GIT, { savedLogin: { username: 'octo' }, ahead: 2,
+    commits: [{ hash: 'abc1234', subject: 'x', author: 'Dev', date: null, pushed: false }] });
+  app.replaceChildren(GitTab(ENV));
+  check('git: push on recent commits', pushIn().length === 1 && pushIn()[0].textContent.includes('Push 2 commit'));
+  pushIn()[0].click();
+  await tick();
+  [...document.querySelectorAll('dialog[open] button')].find((b) => b.textContent.trim() === 'Push').click();
+  await tick();
+  check('git: recent-commits push posts push', gitPosts[gitPosts.length - 1].path.endsWith('/git/push'), JSON.stringify(gitPosts[gitPosts.length - 1]));
+
+  // The watch panel adopts the newest running operation — not a hidden one,
+  // and never in place of a running watch that has its own onDone.
+  S.detail = Object.assign({}, ENV, { operations: [
+    { id: 'op-new', kind: 'magento_build', label: 'Build Magento', status: 'running' },
+    { id: 'op-old', kind: 'cache_flush', label: 'Flush', status: 'done' }] });
+  S.watch = null; S.watchHidden = null;
+  adoptRunningOperation();
+  check('adopts the running operation', S.watch && S.watch.opId === 'op-new' && S.watch.label === 'Build Magento');
+  S.watch = null; S.watchHidden = 'op-new';
+  adoptRunningOperation();
+  check('hidden one not re-adopted', S.watch === null);
+  S.watchHidden = null;
+  const mine = { envId: ENV.id, opId: 'op-mine', label: 'Dry run', rec: { status: 'running' }, onDone: () => {} };
+  S.watch = mine;
+  adoptRunningOperation();
+  check('running watch with onDone kept', S.watch === mine);
 }
 
 run().catch((e) => check('run', false, String(e && e.stack || e))).finally(() => {

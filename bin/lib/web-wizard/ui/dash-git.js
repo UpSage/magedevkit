@@ -453,7 +453,8 @@ function GitTab(env) {
             Button({ variant: 'outline', size: 'sm', iconName: 'arrowLeft', label: `Unstage${selStaged.length ? ` (${selStaged.length})` : ''}`,
               disabled: busy || !selStaged.length, onClick: () => gitWrite(env, 'unstage', { paths: selStaged }) }),
             Button({ variant: 'ghost', size: 'sm', label: 'Unstage all', disabled: busy || !stagedFiles.length, onClick: () => gitWrite(env, 'unstage', { paths: 'all' }) }),
-            stagedFiles.length ? Button({ size: 'sm', iconName: 'check', label: `Commit (${stagedFiles.length})`, disabled: busy, onClick: () => gitCommitDialog(env) }) : null,
+            Button({ size: 'sm', iconName: 'check', label: stagedFiles.length ? `Commit (${stagedFiles.length})` : 'Commit',
+              title: stagedFiles.length ? null : 'Stage files to commit', disabled: busy || !stagedFiles.length, onClick: () => gitCommitDialog(env) }),
           ],
         }, GitFileList(env, stagedFiles, 'staged', busy))),
       (g.ignored || []).length ? Collapsible({ title: `Ignored by .gitignore (${g.ignoredTotal})`, iconName: 'circleMinus' },
@@ -474,8 +475,12 @@ function GitTab(env) {
   if (diffCard) diffCard.id = 'git-diff';
 
   // -- history -----------------------------------------------------------------
+  // Push right where the unpushed commits are (same as the footer's Push).
+  const unpushed = g.upstream ? g.ahead : g.commits.filter((c) => !c.pushed).length;
   const historyCard = Card({},
-    CardHeader(CardTitle('Recent commits'), CardDescription('“Not pushed” means no branch on origin has it yet (as of the last fetch).')),
+    CardHeader(CardTitle('Recent commits'), CardDescription('“Not pushed” means no branch on origin has it yet (as of the last fetch).'),
+      g.branch && (unpushed || !g.upstream) && g.commits.length ? CardAction(Button({ size: 'sm', iconName: 'upload',
+        label: g.upstream ? `Push ${unpushed} commit(s)` : 'Publish branch', disabled: busy, onClick: () => gitNetwork(env, 'push') })) : null),
     CardContent(g.commits.length ? Table(
       TableHeader(TableRow(['Commit', 'Message', 'Author', 'When', ''].map((t) => TableHead(t)))),
       TableBody(g.commits.map((c) => TableRow(
