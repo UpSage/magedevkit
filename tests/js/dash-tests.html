@@ -210,6 +210,60 @@ async function run() {
   const offline = ReleasesCard(Object.assign({}, REL, { releases: Object.assign({}, REL.releases, { check: { fetchedAt: null, lastError: 'URLError: refused' } }) }));
   check('offline card', offline.textContent.includes('couldn’t reach Adobe') && offline.textContent.includes('m2/ catalog only'));
   check('not installed card', ReleasesCard(Object.assign({}, REL, { releases: null, magentoVersion: { value: null } })).textContent.includes('once Magento is installed'));
+
+  // Git tab: GitHub access vs commit author; fetch with a saved login just runs.
+  const GIT = {
+    branch: 'main', upstream: 'origin/main', ahead: 0, behind: 0, files: [], filesTotal: 0, ignored: ['vendor/'], ignoredTotal: 1,
+    branches: [{ name: 'main', upstream: 'origin/main', ahead: 0, behind: 0, gone: false },
+      { name: 'side', upstream: 'origin/side', ahead: 0, behind: 2, gone: false },
+      { name: 'mine', upstream: null, ahead: 0, behind: 0, gone: false }],
+    remoteBranches: ['origin/main', 'origin/side', 'origin/feature'], commits: [], remote: 'https://github.com/acme/shop.git',
+    lastFetch: null, identity: { name: 'Dev', email: 'dev@acme.test' }, savedLogin: { username: 'octo' }, mode: 'developer',
+  };
+  S.git = GIT; S.gitNeedsLogin = false; S.watch = null;
+  const gitPosts = [];
+  window.api = (path, body) => { gitPosts.push({ path, body }); return Promise.resolve({ ok: true, data: { operation: 'g-' + gitPosts.length } }); };
+  app.replaceChildren(GitTab(ENV));
+  const gitText = app.textContent;
+  check('git: signed in as', gitText.includes('Signed in as octo') && gitText.includes('Use a different login'));
+  check('git: author row', gitText.includes('Commit author') && gitText.includes('Dev <dev@acme.test>') && gitText.includes('not a login'));
+  check('git: pull always shown', [...app.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Pull'));
+  check('git: lists behind branch only', gitText.includes('Other local branches behind origin') && gitText.includes('side')
+    && !app.querySelector('tbody').textContent.includes('mine'));
+  check('git: ignored list is a ListBox', !!app.querySelector('[role=list][aria-label="Ignored paths"]'));
+  [...app.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Fetch').click();
+  await tick();
+  check('git: fetch with saved login, no dialog', !document.querySelector('dialog[open]') && gitPosts.length === 1
+    && gitPosts[0].path.endsWith('/git/fetch') && Object.keys(gitPosts[0].body).length === 0, JSON.stringify(gitPosts));
+  [...app.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Update from origin').click();
+  await tick();
+  [...document.querySelectorAll('dialog[open] button')].find((b) => b.textContent.trim() === 'Update').click();
+  await tick();
+  check('git: update other branch', gitPosts.length === 2 && gitPosts[1].path.endsWith('/git/update_branch') && gitPosts[1].body.branch === 'side', JSON.stringify(gitPosts[1]));
+  [...app.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Edit').click();
+  await tick();
+  check('git: Edit opens the author dialog', document.querySelector('dialog[open]').textContent.includes('Commit identity for this repo'));
+  [...document.querySelectorAll('dialog[open] button')].find((b) => b.textContent.trim() === 'Cancel').click();
+  await tick();
+  // No saved login: the sign-in dialog, Remember ticked; both fields go along.
+  S.git = Object.assign({}, GIT, { savedLogin: null });
+  app.replaceChildren(GitTab(ENV));
+  check('git: not signed in', app.textContent.includes('Not signed in'));
+  [...app.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Fetch').click();
+  await tick();
+  let gd = document.querySelector('dialog[open]');
+  check('git: login dialog, remember ticked', gd && gd.querySelector('#git-remember').checked);
+  gd.querySelector('#git-user').value = 'octo';
+  gd.querySelector('#git-token').value = '';
+  [...gd.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Fetch').click();
+  await tick();
+  check('git: half a login is refused', document.querySelector('dialog[open]') && gitPosts.length === 2);
+  gd = document.querySelector('dialog[open]');
+  gd.querySelector('#git-token').value = 'ghp_x';
+  [...gd.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Fetch').click();
+  await tick();
+  check('git: login posted with remember', gitPosts.length === 3 && gitPosts[2].body.username === 'octo'
+    && gitPosts[2].body.token === 'ghp_x' && gitPosts[2].body.remember === true, JSON.stringify(gitPosts[2]));
 }
 
 run().catch((e) => check('run', false, String(e && e.stack || e))).finally(() => {

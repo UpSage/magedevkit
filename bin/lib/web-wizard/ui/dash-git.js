@@ -39,52 +39,100 @@ async function gitWrite(env, command, body, okText) {
   return true;
 }
 
-// Fetch / pull / push: a dialog that says what happens, with optional
-// one-time GitHub login fields, then the command runs as an operation shown
-// in the watch panel.
-async function gitNetwork(env, command) {
+// GitHub username + personal access token, for when this repo has no saved
+// login (or GitHub just rejected it). Resolves { username, token, remember },
+// {} to go on without one (both left empty — a public repo, or another
+// credential helper), or null when cancelled.
+async function gitLoginDialog({ title, intro, confirm }) {
+  const user = Input({ id: 'git-user', placeholder: 'GitHub username', autocomplete: 'username' });
+  const token = Input({ id: 'git-token', type: 'password', placeholder: 'Personal access token', autocomplete: 'off' });
+  const remember = Checkbox({ id: 'git-remember', checked: true });
+  const help = FormHelp('A classic token with the repo scope, or a fine-grained one with read and write access to this repository’s contents.', 'git-token-help');
+  const ok = await formDialog({
+    title,
+    description: [h('div', { class: 'space-y-3 text-left' },
+      intro ? h('p', { text: intro }) : null,
+      FormField('GitHub username', 'git-user', user),
+      FormField('Personal access token', 'git-token', token, help),
+      h('p', { class: 'text-muted-foreground text-xs' }, 'Create one on GitHub: ',
+        TextLink({ href: 'https://github.com/settings/tokens', text: 'Settings → Developer settings → Personal access tokens', external: true })),
+      h('div', { class: 'space-y-1' },
+        h('div', { class: 'flex items-center gap-2' }, remember, Label('Remember it for this repo', 'git-remember')),
+        h('p', { class: 'text-muted-foreground text-xs', text: 'Saved only when GitHub accepts it, in magento/.git/credentials (readable only by you) — this repo only, never your global git config. Unticked, it’s used for this one command and not saved.' })))],
+    actions: [{ label: 'Cancel', value: false }, { label: confirm, value: true }],
+    validate: () => {
+      if (!user.value.trim() !== !token.value.trim()) {
+        markInvalid(user.value.trim() ? token : user, help, 'Enter both the username and the token — or leave both empty to go on without a login.');
+        return false;
+      }
+      return true;
+    },
+  });
+  if (!ok) return null;
+  if (!user.value.trim()) return {};
+  return { username: user.value.trim(), token: token.value.trim(), remember: remember.querySelector('input').checked };
+}
+
+// Fetch / pull / push / update_branch. With a saved login that GitHub
+// hasn't rejected, fetch just runs (it changes no files) and the others
+// confirm what they do; otherwise the login dialog comes first. The command
+// runs as an operation shown in the watch panel.
+async function gitNetwork(env, command, { branch } = {}) {
   const g = S.git || {};
+  const target = branch && g.branches.find((b) => b.name === branch);
   const what = {
     fetch: `Downloads what’s new on ${g.remote || 'origin'} and updates ahead/behind. Your files don’t change.`,
-    pull: `Fast-forwards ${g.branch} to ${g.upstream} (${g.behind || 0} new commit(s)). It never creates a merge commit — if both sides have new commits it stops and says so.`,
+    pull: `Brings ${g.branch} up to date with ${g.upstream}${g.behind ? ` (${g.behind} new commit(s) as of the last fetch)` : ''}. Fast-forward only — it never creates a merge commit; if both sides have new commits it stops and says so.`,
     push: g.upstream
       ? `Sends ${g.ahead || 0} commit(s) on ${g.branch} to ${g.upstream}.`
       : `Publishes ${g.branch} to origin as a new branch (git push -u origin ${g.branch}).`,
+    update_branch: target ? `Brings your local ${branch} up to date with ${target.upstream} without switching to it — fast-forward only, and none of your files change.` : '',
   }[command];
-  const user = Input({ id: 'git-user', placeholder: 'GitHub username', autocomplete: 'username' });
-  const token = Input({ id: 'git-token', type: 'password', placeholder: 'Personal access token', autocomplete: 'off' });
-  const remember = Checkbox({ id: 'git-remember' });
-  const login = Panel({ cls: 'space-y-3 text-left' },
-    h('p', { class: 'text-muted-foreground text-xs', text: S.gitNeedsLogin
-      ? 'GitHub asked for a login last time. Enter your username and a personal access token (repo scope).'
-      : g.savedLogin ? 'Using the GitHub login saved for this repo. Fill these in only to use a different one.'
-        : 'Only if git has no saved login for GitHub: a personal access token (repo scope).' }),
-    h('div', { class: 'space-y-2' }, Label('GitHub username', 'git-user'), user),
-    h('div', { class: 'space-y-2' }, Label('Personal access token', 'git-token'), token),
-    h('div', { class: 'space-y-1' },
-      h('div', { class: 'flex items-center gap-2' }, remember, Label('Remember my credentials', 'git-remember')),
-      h('p', { class: 'text-muted-foreground text-xs', text: 'Saved for this repo only, in magento/.git/credentials (readable only by you), so the dashboard and your terminal stop asking here. Other repos never see it, and your global git config isn’t touched. Unticked, they’re used for this one command and never saved.' })));
-  const go = await dialog({
-    title: { fetch: 'Fetch from origin?', pull: 'Pull?', push: 'Push?' }[command],
-    description: [h('p', { text: what }), login],
-    actions: [{ label: 'Cancel', value: false }, { label: { fetch: 'Fetch', pull: 'Pull', push: 'Push' }[command], value: true }],
+  const title = { fetch: 'Fetch from origin?', pull: 'Pull?', push: 'Push?', update_branch: `Update ${branch} from origin?` }[command];
+  const verb = { fetch: 'Fetch', pull: 'Pull', push: 'Push', update_branch: 'Update' }[command];
+  let login = {};
+  if (!g.savedLogin || S.gitNeedsLogin) {
+    login = await gitLoginDialog({
+      title,
+      intro: `${what} ${S.gitNeedsLogin ? 'GitHub rejected the last login — enter your username and a personal access token.'
+        : 'This repo has no saved GitHub login. Leave both fields empty if the repository is public or git has another login for it.'}`,
+      confirm: verb,
+    });
+    if (!login) return;
+  } else if (command !== 'fetch' && !(await confirmDialog({ title, text: what, confirm: verb }))) {
+    return;
+  }
+  gitRunNetwork(env, command, Object.assign(branch ? { branch } : {}, login));
+}
+
+function gitRunNetwork(env, command, body, label) {
+  return api(gitUrl(env, command), body).then((res) => {
+    if (!res.ok) return showError(`git ${command.replace('_', ' ')} didn’t start`, res);
+    const name = label || (command === 'update_branch' ? `git fetch → ${body.branch}` : `git ${command}`);
+    S.watch = {
+      envId: env.id, opId: res.data.operation, label: name, text: '', rec: { status: 'starting' },
+      onDone: (w) => {
+        S.gitNeedsLogin = w.rec.status === 'failed' && AUTH_FAILED.test(w.text || '');
+        if (S.gitNeedsLogin) toast('GitHub didn’t accept the login — sign in again with your username and a personal access token.', 'warning');
+        else if (w.rec.status === 'done' && body.remember) toast('Signed in — the login is saved for this repo.', 'success');
+        loadGit().then(render);
+      },
+    };
+    watchPre = null;
+    watchOperation();
   });
-  if (!go) return;
-  const body = user.value.trim() || token.value.trim()
-    ? { username: user.value.trim(), token: token.value.trim(), remember: remember.querySelector('input').checked } : {};
-  const res = await api(gitUrl(env, command), body);
-  if (!res.ok) return showError(`git ${command} didn’t start`, res);
-  const label = `git ${command}`;
-  S.watch = {
-    envId: env.id, opId: res.data.operation, label, text: '', rec: { status: 'starting' },
-    onDone: (w) => {
-      S.gitNeedsLogin = w.rec.status === 'failed' && AUTH_FAILED.test(w.text || '');
-      if (S.gitNeedsLogin) toast('GitHub needs a login — run it again with your username and a personal access token.', 'warning');
-      loadGit().then(render);
-    },
-  };
-  watchPre = null;
-  watchOperation();
+}
+
+// Sign in (or use a different login): the login dialog, then a fetch with it
+// — GitHub checks the token, and git saves it only once GitHub accepts it.
+async function gitSignIn(env) {
+  const login = await gitLoginDialog({
+    title: S.git && S.git.savedLogin ? 'Use a different GitHub login?' : 'Sign in to GitHub for this repo?',
+    intro: 'Fetch, pull and push in this repo will use it. It’s checked with a fetch from origin, which changes none of your files.',
+    confirm: 'Sign in',
+  });
+  if (!login || !login.username) return;
+  gitRunNetwork(env, 'fetch', login, 'git fetch (sign in)');
 }
 
 // Commit in a dialog: the staged files, the author, the message.
@@ -278,7 +326,7 @@ function GitFileList(env, files, which, busy) {
       text: staged ? 'Nothing staged — drag files here, or use → on the left.' : 'No unstaged changes.' });
   }
   const all = files.every((f) => sel.has(f.path));
-  const head = h('div', { class: 'text-muted-foreground flex items-center gap-2 border-b px-3 py-1.5 text-xs' },
+  const head = ListRow({ header: true },
     Checkbox({ 'aria-label': staged ? 'Select all staged files' : 'Select all unstaged files', checked: all,
       onChange: (e) => { files.forEach((f) => (e.target.checked ? sel.add(f.path) : sel.delete(f.path))); render(); } }),
     h('span', { text: sel.size ? `${files.filter((f) => sel.has(f.path)).length} selected` : 'Select all' }));
@@ -287,10 +335,7 @@ function GitFileList(env, files, which, busy) {
     const [txt, variant, title] = GIT_BADGE[code] || [code, 'secondary', code];
     const partly = f.staged && f.unstaged && !f.untracked && !f.conflict;
     const open = S.gitDiff && S.gitDiff.path === f.path && S.gitDiff.staged === staged;
-    const row = h('div', {
-      class: cn('flex items-center gap-2 border-b px-3 py-1.5 last:border-b-0 hover:bg-muted/50 data-[dragging=true]:opacity-50',
-        f.conflict || busy ? null : 'cursor-grab active:cursor-grabbing'),
-    },
+    const row = ListRow({ hover: true, cls: cn('data-[dragging=true]:opacity-50', f.conflict || busy ? null : 'cursor-grab active:cursor-grabbing') },
     Checkbox({ 'aria-label': `Select ${f.path}`, checked: sel.has(f.path),
       onChange: (e) => { if (e.target.checked) sel.add(f.path); else sel.delete(f.path); render(); } }),
     h('span', { title }, Badge(txt, variant)),
@@ -310,7 +355,7 @@ function GitFileList(env, files, which, busy) {
     }
     return row;
   });
-  return h('div', {}, head, rows);
+  return h('div', {}, head, h('div', { role: 'list', 'aria-label': staged ? 'Staged files' : 'Unstaged files' }, rows));
 }
 
 function GitTab(env) {
@@ -332,6 +377,7 @@ function GitTab(env) {
       .concat(g.remoteBranches.filter((r) => !g.branches.some((b) => r === `origin/${b.name}`)).map((r) => ({ value: r, label: `${r} (remote)` }))),
   });
   const pickerSelect = picker.querySelector('select');
+  const behindBranches = g.branches.filter((b) => b.name !== g.branch && b.behind > 0 && (b.upstream || '').startsWith('origin/') && !b.gone);
   const syncBadges = [
     !g.branch ? Badge('Detached HEAD', 'warning') : null,
     g.branch && !g.upstream ? Badge('Not on origin yet', 'secondary') : null,
@@ -344,23 +390,40 @@ function GitTab(env) {
       CardTitle(g.branch || 'Detached HEAD'),
       CardDescription(`${g.upstream ? `Tracks ${g.upstream}` : 'No upstream'} · last fetched ${when(g.lastFetch) || 'never'} — ahead/behind counts are from that fetch.`),
       CardAction(h('div', { class: 'flex flex-wrap justify-end gap-1' }, syncBadges))),
-    CardContent(h('div', { class: 'flex flex-wrap items-center gap-2' },
+    CardContent(h('div', { class: 'space-y-4' }, h('div', { class: 'space-y-2' }, h('div', { class: 'flex flex-wrap items-center gap-2' },
       picker,
       Button({ variant: 'outline', size: 'sm', label: 'Switch', disabled: busy,
         onClick: () => { const v = pickerSelect.value; if (v && v !== g.branch) gitSwitch(env, v); } }),
       Button({ variant: 'outline', size: 'sm', iconName: 'plus', label: 'New branch', disabled: busy, onClick: () => gitNewBranch(env) }),
       Button({ variant: 'ghost', size: 'sm', iconName: 'x', label: 'Delete branch', disabled: busy || g.branches.filter((b) => b.name !== g.branch).length === 0,
-        onClick: () => gitDeleteBranch(env, pickerSelect.value) }))),
+        onClick: () => gitDeleteBranch(env, pickerSelect.value) })),
+      h('p', { class: 'text-muted-foreground text-xs', text: 'To work on a branch from origin, pick it (marked “remote”) and Switch — you get your own copy that tracks it.' })),
+      behindBranches.length ? Table(
+        TableHeader(TableRow(TableHead('Other local branches behind origin'), TableHead('Behind'), TableHead('', 'text-right'))),
+        TableBody(behindBranches.map((b) => TableRow(
+          TableCell(h('span', { class: 'flex items-center gap-2' }, InlineCode(b.name), h('span', { class: 'text-muted-foreground text-xs', text: `tracks ${b.upstream}` }))),
+          TableCell(Badge(`${b.behind} behind`, 'warning', 'download')),
+          TableCell(Button({ variant: 'outline', size: 'sm', label: 'Update from origin', disabled: busy,
+            onClick: () => gitNetwork(env, 'update_branch', { branch: b.name }) }), 'text-right'))))) : null,
+      DescriptionList([
+        ['GitHub access', h('span', { class: 'flex flex-wrap items-center gap-2' },
+          S.gitNeedsLogin ? Badge('GitHub rejected the login', 'warning', 'alert')
+            : g.savedLogin ? Badge(g.savedLogin.username ? `Signed in as ${g.savedLogin.username}` : 'Signed in', 'success', 'check')
+              : h('span', { class: 'text-muted-foreground', text: 'Not signed in — fetch, pull and push will ask' }),
+          Button({ variant: 'outline', size: 'sm', label: S.gitNeedsLogin ? 'Sign in again' : g.savedLogin ? 'Use a different login' : 'Sign in',
+            disabled: busy, onClick: () => gitSignIn(env) }),
+          g.savedLogin ? Button({ variant: 'ghost', size: 'sm', label: 'Forget', disabled: busy, onClick: () => gitForgetLogin(env) }) : null),
+        g.savedLogin ? 'saved for this repo only' : null],
+        ['Commit author', h('span', { class: 'flex flex-wrap items-center gap-2' },
+          g.identity ? `${g.identity.name} <${g.identity.email}>` : h('span', { class: 'text-muted-foreground', text: 'Not set' }),
+          Button({ variant: 'outline', size: 'sm', label: g.identity ? 'Edit' : 'Set', disabled: busy,
+            title: 'The name and email written on your commits — not a login.', onClick: () => gitIdentityDialog(env) })),
+        'the name on your commits — not a login'],
+      ], { center: true }))),
     CardFooter(
       Button({ variant: 'outline', size: 'sm', iconName: 'rotateCw', label: 'Fetch', disabled: busy, onClick: () => gitNetwork(env, 'fetch') }),
-      g.upstream && g.behind ? Button({ variant: 'outline', size: 'sm', iconName: 'download', label: `Pull ${g.behind}`, disabled: busy, onClick: () => gitNetwork(env, 'pull') }) : null,
-      g.branch && (g.ahead || !g.upstream) ? Button({ size: 'sm', iconName: 'upload', label: g.upstream ? `Push ${g.ahead}` : 'Publish branch', disabled: busy, onClick: () => gitNetwork(env, 'push') }) : null,
-      S.gitNeedsLogin ? Badge('GitHub login needed', 'warning', 'alert') : null,
-      h('span', { class: 'text-muted-foreground flex items-center gap-1 text-xs' },
-        g.identity ? `Commits as ${g.identity.name} <${g.identity.email}>` : 'No commit name/email for this repo yet',
-        Button({ variant: 'link', size: 'sm', label: g.identity ? 'Change' : 'Set', disabled: busy, onClick: () => gitIdentityDialog(env) })),
-      g.savedLogin ? h('span', { class: 'ml-auto flex items-center gap-2' }, Badge('Saved GitHub login', 'success', 'check'),
-        Button({ variant: 'ghost', size: 'sm', label: 'Forget', disabled: busy, onClick: () => gitForgetLogin(env) })) : null));
+      g.upstream ? Button({ variant: 'outline', size: 'sm', iconName: 'download', label: g.behind ? `Pull ${g.behind}` : 'Pull', disabled: busy, onClick: () => gitNetwork(env, 'pull') }) : null,
+      g.branch && (g.ahead || !g.upstream) ? Button({ size: 'sm', iconName: 'upload', label: g.upstream ? `Push ${g.ahead}` : 'Publish branch', disabled: busy, onClick: () => gitNetwork(env, 'push') }) : null));
 
   // -- changes -----------------------------------------------------------------
   const selStaged = [...S.gitSel.staged];
@@ -396,8 +459,7 @@ function GitTab(env) {
       (g.ignored || []).length ? Collapsible({ title: `Ignored by .gitignore (${g.ignoredTotal})`, iconName: 'circleMinus' },
         h('div', { class: 'space-y-2 px-6' },
           h('p', { class: 'text-muted-foreground text-xs', text: 'git never stages these unless .gitignore changes. Whole ignored folders are listed once.' }),
-          h('ul', { class: 'max-h-64 overflow-auto border' }, g.ignored.map((p) => h('li', { class: 'flex items-center gap-2 border-b px-3 py-1 last:border-b-0' },
-            Badge('!', 'outline'), InlineCode(p, { cls: 'break-all' })))),
+          ListBox({ label: 'Ignored paths' }, g.ignored.map((p) => ListRow({}, Badge('!', 'outline'), InlineCode(p, { cls: 'break-all' })))),
           g.ignoredTotal > g.ignored.length ? h('p', { class: 'text-muted-foreground text-xs', text: `Showing ${g.ignored.length} of ${g.ignoredTotal}.` }) : null)) : null)));
 
 

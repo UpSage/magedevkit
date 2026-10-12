@@ -327,6 +327,21 @@ function Panel({ size = 'default', cls, title } = {}, ...kids) {
   return h('div', { class: cn('rounded-lg border', PANEL_SIZES[size], cls), title }, kids);
 }
 
+// One line in a bordered list (file lists, ignored paths): items in a row,
+// divided from the next by a border. header: the list's muted top line;
+// hover: highlights under the pointer. cls is for layout/behaviour only.
+const LIST_ROW = 'flex items-center gap-2 border-b px-3 py-1.5 last:border-b-0';
+function ListRow({ header, hover, cls, ...rest } = {}, ...kids) {
+  return h('div', Object.assign({
+    class: cn(LIST_ROW, header ? 'text-muted-foreground text-xs' : null, hover ? 'hover:bg-muted/50' : null, cls),
+    role: header ? null : 'listitem',
+  }, rest), kids);
+}
+// A bordered, scrolling box of ListRows (on its own, not inside a DropZone).
+function ListBox({ label } = {}, ...rows) {
+  return h('div', { class: 'max-h-64 overflow-auto rounded-lg border', role: 'list', 'aria-label': label }, rows);
+}
+
 // A Card that opens and closes (native <details>).
 function Collapsible({ title, iconName }, ...kids) {
   return h('details', { class: 'group bg-card text-card-foreground rounded-xl border shadow-sm' },

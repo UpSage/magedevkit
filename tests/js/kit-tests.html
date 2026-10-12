@@ -115,6 +115,12 @@ async function run() {
   const bar = SelectionBar('3 selected', Button({ label: 'Go' }));
   check('SelectionBar', bar.getAttribute('role') === 'toolbar' && bar.textContent.includes('3 selected') && bar.querySelector('button'));
 
+  // ListBox / ListRow: a labelled list of rows; the header row isn't an item.
+  const lb = ListBox({ label: 'Paths' }, ListRow({}, 'a'), ListRow({ hover: true }, 'b'));
+  check('ListBox', lb.getAttribute('role') === 'list' && lb.getAttribute('aria-label') === 'Paths'
+    && lb.querySelectorAll('[role=listitem]').length === 2);
+  check('ListRow header', ListRow({ header: true }, 'h').getAttribute('role') === null);
+
   // userBusy: typing or an open dialog.
   const input = h('input'); document.body.append(input); input.focus();
   check('userBusy while typing', userBusy() === true);

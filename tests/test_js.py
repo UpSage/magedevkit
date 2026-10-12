@@ -54,7 +54,7 @@ class KitInBrowser(unittest.TestCase):
         self.run_page("kit-tests.html", 20)
 
     def test_dashboard_tabs(self):
-        self.run_page("dash-tests.html", 40)
+        self.run_page("dash-tests.html", 52)
 
 
 if __name__ == "__main__":
