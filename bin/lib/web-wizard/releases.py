@@ -242,7 +242,7 @@ def write_derived(final, entries, fetched_at):
     release that's now catalogued (or no longer passes) disappears. Call
     with the cache lock held."""
     root = os.path.dirname(final)
-    for name in os.listdir(root):  # leftovers of an interrupted run, and the pre-1.0.1 shared tree
+    for name in os.listdir(root):  # leftovers of an interrupted run, and the pre-1.1.0 shared tree
         if name.startswith("tmp.m2-") or name.endswith(".old") or name == "m2":
             shutil.rmtree(os.path.join(root, name), ignore_errors=True)
     tmp = tempfile.mkdtemp(prefix="tmp." + os.path.basename(final) + ".", dir=root)

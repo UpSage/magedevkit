@@ -1000,7 +1000,7 @@ initializes the volume, and `app/etc/env.php` keeps its own copy. Either run the
 
 ## Changelog
 
-### 1.0.1 (2026-10-10)
+### 1.1.0 (2026-10-12)
 
 **Renamed: MageRunner is now MageDevKit (Magento Developer Kit), and the `mrn` command is now `mdk`.**
 Containers, volumes, data and instance settings are unchanged. To move an existing install:
