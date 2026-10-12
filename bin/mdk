@@ -13,7 +13,10 @@
 #   mdk pipeline | pipeline-wizard     make magento/ pipeline-ready (deploy/ kit)
 #   mdk rebuild [--composer install|update [pkgs]] | rebuild-wizard   full Magento rebuild
 #   mdk destroy --yes                  delete the instance: containers, data and its folder
-#   mdk build [--composer install|update [pkgs]]   Magento-only build (no container changes)
+#   mdk build [--quick] [--composer install|update [pkgs] | --composer require pkg:constraint ...]
+#                                      Magento-only build (no container changes)
+#   mdk module enable|disable [--build] Vendor_Module ...   turn modules on or off
+#   mdk module check-updates | update [--dry-run] [--quick] pkg:constraint ...   module packages
 #   mdk --version                      this platform's version (VERSION)
 #   mdk sync-db … | sync-media         database import / media upload to S3
 #   mdk mode developer|default|production|show
@@ -99,6 +102,7 @@ case "$CMD" in
     sync-media) run sync-media-to-s3 "$@" ;;
     setup|setup-wizard|refresh-wizard|version-wizard|pipeline|pipeline-wizard|rebuild|rebuild-wizard|destroy) run "local/$CMD" "$@" ;;
     build) run "local/magento-build" "$@" ;;
+    module) run "local/magento-module" "$@" ;;
     mode)
         [[ "${1:-}" =~ ^(developer|default|production|show)$ ]] || die "Usage: mdk mode developer|default|production|show"
         m="$1"; shift; run "mode/$m" "$@" ;;

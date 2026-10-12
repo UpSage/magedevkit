@@ -59,6 +59,32 @@ def copy_scripts(repo, *rels):
         shutil.copy2(os.path.join(REPO, rel), dst)
 
 
+# A fixed m2/ catalog for tests, so adding a real release folder to the repo
+# (as the dashboard tells you to) never changes what the tests expect:
+# 2.4.8 (+ p1 … p5, p5 with its own pins) and 2.4.9.
+CATALOG = {
+    "2.4.8/version.env": "MAGENTO_VERSION=2.4.8\nMAGENTO_PACKAGE=magento/project-community-edition\nPHP_VERSION=8.4\n"
+                         "MARIADB_VERSION=11.4\nOPENSEARCH_VERSION=2.19.6\nVALKEY_VERSION=8\nRABBITMQ_VERSION=4.1\n"
+                         "VARNISH_VERSION=7.6\nNGINX_VERSION=1.26\nCOMPOSER_VERSION=2.9\nDEBIAN_RELEASE=bookworm\n",
+    "2.4.8/p1/version.env": "MAGENTO_VERSION=2.4.8-p1\n",
+    "2.4.8/p2/version.env": "MAGENTO_VERSION=2.4.8-p2\n",
+    "2.4.8/p3/version.env": "MAGENTO_VERSION=2.4.8-p3\n",
+    "2.4.8/p4/version.env": "MAGENTO_VERSION=2.4.8-p4\n",
+    "2.4.8/p5/version.env": "MAGENTO_VERSION=2.4.8-p5\nMARIADB_VERSION=11.8\nOPENSEARCH_VERSION=3\nVALKEY_VERSION=8.1\n"
+                            "RABBITMQ_VERSION=4.3\nVARNISH_VERSION=8\nNGINX_VERSION=1.30\nCOMPOSER_VERSION=2.10\n"
+                            "DEBIAN_RELEASE=trixie\n",
+    "2.4.9/version.env": "MAGENTO_VERSION=2.4.9\nMAGENTO_PACKAGE=magento/project-community-edition\nPHP_VERSION=8.5\n"
+                         "MARIADB_VERSION=12.3\nOPENSEARCH_VERSION=3\nVALKEY_VERSION=9\nRABBITMQ_VERSION=4.3\n"
+                         "VARNISH_VERSION=8\nNGINX_VERSION=1.30\nCOMPOSER_VERSION=2.10\nDEBIAN_RELEASE=trixie\n",
+}
+
+
+def write_catalog(m2_dir):
+    for rel, text in CATALOG.items():
+        write(os.path.join(m2_dir, rel), text)
+    return m2_dir
+
+
 def make_checkout(root, project, app_name, domain, extra_env="", with_launch=True):
     """<root>/<project>/platform (+ magento/) laid out like a real checkout."""
     pd = os.path.join(root, project, "platform")
@@ -66,7 +92,8 @@ def make_checkout(root, project, app_name, domain, extra_env="", with_launch=Tru
                 "bin/mode/default", "bin/mode/production"):
         write(os.path.join(pd, rel), RECORDER, 0o755)
     # bin/mode/* sit one level deeper: point their calls.log at the same file
-    for rel in ("bin/mode/show", "bin/mode/developer", "bin/mode/default", "bin/mode/production", "bin/local/magento-build"):
+    for rel in ("bin/mode/show", "bin/mode/developer", "bin/mode/default", "bin/mode/production", "bin/local/magento-build",
+                "bin/local/magento-module"):
         write(os.path.join(pd, rel), RECORDER.replace('"$(dirname "$0")/../calls.log"', '"$(dirname "$0")/../../calls.log"'), 0o755)
     write(os.path.join(pd, "compose", "docker-compose.yml"), "name: ${APP_NAME:-app}-platform\n")
     write(os.path.join(pd, "env", ".env.local"),
@@ -149,7 +176,11 @@ class Dashboard:
         self.tmp = tempfile.mkdtemp(prefix="dash-test-")
         self.state = os.path.join(self.tmp, "state.json")
         self.token = "test-token-0123456789"
-        env = dict(os.environ, DASHBOARD_TOKEN=self.token, PATH=path_dir + os.pathsep + os.environ["PATH"])
+        # Its own release cache, and no network for the background release
+        # check (releases.py) — the tests never touch ~/.cache or Adobe.
+        env = dict(os.environ, DASHBOARD_TOKEN=self.token, PATH=path_dir + os.pathsep + os.environ["PATH"],
+                   XDG_CACHE_HOME=os.path.join(self.tmp, "cache"), HTTPS_PROXY="http://127.0.0.1:9",
+                   https_proxy="http://127.0.0.1:9", NO_PROXY="", no_proxy="")
         env.update(extra_env or {})
         self.proc = subprocess.Popen(
             [sys.executable, os.path.join(WEB, "dashboard.py"), "--checkout", checkout, "--scan", scan,

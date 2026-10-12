@@ -1,0 +1,142 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# PLATFORM_DIR, MAGENTO and the shared helpers (ui.sh, env.sh, paths.sh).
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
+
+# Magento modules and their packages (the dashboard's Modules tab runs this).
+#
+#   mdk module enable|disable [--build] Vendor_Module ...
+#   mdk module check-updates
+#   mdk module update [--dry-run] [--quick] vendor/package:constraint ...
+#
+# enable / disable: bin/magento module:enable|disable --clear-static-content,
+# never with --force — Magento's own dependency check still refuses a change
+# that would break another module, and its message names it. --build makes
+# the change part of the Magento-only build (mdk build --module …):
+# setup:upgrade, di:compile, static content and cache flush with maintenance
+# mode on. Production mode always needs it (the code is locked and compiled
+# there). Without --build only the module list changes; build before using
+# the store.
+#
+# check-updates: composer outdated --direct --all for the packages
+# composer.json requires, saved to logs/module-updates.json for the
+# dashboard. Composer reads magento/auth.json itself, so private
+# repositories work when their credentials are there.
+#
+# update: composer require --update-with-dependencies for just these
+# packages (and their own dependencies), then the build (mdk build --composer
+# require …), which puts composer.json and composer.lock back if composer
+# fails. --dry-run only resolves — composer checks PHP, Magento and every
+# conflict and changes nothing. --quick (developer/default mode) runs
+# setup:upgrade and cache:flush instead of the full build (mdk build --quick).
+
+case "${1:-}" in
+    enable|disable|check-updates|update) OP="$1"; shift ;;
+    -h|--help) script_help "$0"; exit 0 ;;
+    *) fail "Expected enable, disable, check-updates or update (got '${1:-nothing}') — e.g. $(cmd_hint module enable --build Vendor_Module)" ;;
+esac
+
+if [ "$OP" = check-updates ]; then
+    [ "$#" -eq 0 ] || fail "check-updates takes no arguments."
+    require_env_file
+    wizard_lock
+    require_php_running
+    TMP="$(mktemp -d)"
+    trap 'rm -rf "$TMP"' EXIT
+    OUT="$TMP/out.json"
+    ERR="$TMP/err.txt"
+    printf '\n→ %s\n' "composer outdated --direct --all --format=json"
+    RC=0
+    "$PLATFORM_DIR/bin/composer" outdated --direct --all --format=json --no-interaction > "$OUT" 2> "$ERR" || RC=$?
+    cat "$ERR"
+    mkdir -p "$LOGS_DIR"
+    # The result, the time and the exit code in one file, swapped in whole.
+    python3 -I - "$OUT" "$ERR" "$RC" "$LOGS_DIR/module-updates.json" <<'PY'
+import datetime, json, os, sys
+out, err, rc, dest = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+packages, error = None, None
+try:
+    with open(out, encoding="utf-8") as f:
+        data = json.load(f)
+    packages = {p["name"]: {"version": p.get("version"), "latest": p.get("latest"), "latestStatus": p.get("latest-status"),
+                            "abandoned": p.get("abandoned") or False, "warning": p.get("warning")}
+                for p in data.get("installed") or [] if isinstance(p, dict) and isinstance(p.get("name"), str)}
+except (OSError, ValueError, AttributeError, TypeError):
+    pass
+if rc != 0:
+    packages = None  # a failed check says nothing about any package
+if packages is None:
+    with open(err, encoding="utf-8", errors="replace") as f:
+        lines = [l for l in f.read().splitlines() if l.strip()]
+    error = "\n".join(lines[-15:]) or "composer outdated exited with %d and printed no JSON." % rc
+record = {"checkedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          "exitCode": rc, "packages": packages, "error": error}
+tmp = dest + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(record, f, indent=1)
+os.replace(tmp, dest)
+PY
+    [ "$RC" -eq 0 ] || fail "composer outdated failed (exit $RC) — see its output above."
+    echo
+    echo "✓ Update check saved (${LOGS_DIR#"$INSTANCE_DIR/"}/module-updates.json)."
+    exit 0
+fi
+
+if [ "$OP" = update ]; then
+    DRY=0
+    QUICK=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run) DRY=1; shift ;;
+            --quick) QUICK=(--quick); shift ;;
+            *) break ;;
+        esac
+    done
+    composer_check require "$@"
+    if [ "$DRY" = 0 ]; then
+        exec "$(dirname "${BASH_SOURCE[0]}")/magento-build" "${QUICK[@]}" --composer require "$@"
+    fi
+    require_env_file
+    wizard_lock
+    require_php_running
+    # composer require refuses an unwritable composer.json even for a dry
+    # run — in production mode the code is locked, so open it meanwhile.
+    relock() {
+        "$PLATFORM_DIR/bin/permissions/lock" >/dev/null 2>&1 || echo "⚠ Couldn't lock the code again — run: $(cmd_hint permissions lock)"
+    }
+    if [ "$(env_get "$ENV_FILE" MAGENTO_MODE)" = production ]; then
+        "$PLATFORM_DIR/bin/permissions/unlock"
+        trap relock EXIT
+    fi
+    printf '\n→ %s\n' "composer require --dry-run --update-with-dependencies $*"
+    "$PLATFORM_DIR/bin/composer" require --dry-run --update-with-dependencies --no-interaction "$@"
+    echo
+    echo "✓ Dry run passed — composer can install these versions. Nothing was changed."
+    exit 0
+fi
+
+BUILD=0
+if [ "${1:-}" = --build ]; then
+    BUILD=1
+    shift
+fi
+module_check "$@"
+
+if [ "$BUILD" = 1 ]; then
+    exec "$(dirname "${BASH_SOURCE[0]}")/magento-build" --module "$OP" "$@"
+fi
+
+require_env_file
+[ "$(env_get "$ENV_FILE" MAGENTO_MODE)" != production ] \
+    || fail "In production mode a module change needs the build too (the code is locked and compiled) — add --build: $(cmd_hint module "$OP" --build "$@")"
+wizard_lock
+require_php_running
+
+printf '\n→ %s\n' "module:$OP $*"
+"$MAGENTO" "module:$OP" --clear-static-content "$@"
+
+echo
+echo "✓ module:$OP finished. Build Magento before using the store — it needs at least setup:upgrade: $(cmd_hint build)"

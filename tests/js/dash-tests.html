@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>dashboard tests</title>
+</head>
+<body>
+  <!-- Run by tests/test_js.py in a headless browser; the result lands in #result.
+       Loads the dashboard scripts (not dashboard.js, the boot) and renders
+       tabs from canned data. -->
+  <div id="app"></div>
+  <div id="toasts"></div>
+  <pre id="result">running</pre>
+  <script>
+    // The dashboard API isn't there: every request answers 404, quietly.
+    window.fetch = () => Promise.resolve(new Response('{}', { status: 404, headers: { 'Content-Type': 'application/json' } }));
+  </script>
+  <script src="../../bin/lib/web-wizard/ui/kit.js"></script>
+  <script src="../../bin/lib/web-wizard/ui/dash-core.js"></script>
+  <script src="../../bin/lib/web-wizard/ui/dash-env.js"></script>
+  <script src="../../bin/lib/web-wizard/ui/dash-git.js"></script>
+  <script src="../../bin/lib/web-wizard/ui/dash-modules.js"></script>
+  <script>
+'use strict';
+const results = [];
+function check(name, ok, detail) { results.push((ok ? 'PASS ' : 'FAIL ') + name + (ok || detail === undefined ? '' : ' — ' + detail)); }
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+// No polling or page redraws behind the tests' back: these tabs are drawn by hand.
+refresh = () => {};
+watchOperation = () => {};
+
+const mod = (name, extra) => Object.assign({ name, vendor: name.split('_')[0], enabled: true, source: 'composer', package: null,
+  version: null, setupVersion: null, sequence: [], dependents: [], core: false,
+  update: { status: 'unable-to-check', reason: 'No update check has run yet.' } }, extra);
+const ENV = {
+  id: 'shop', name: 'shop', domain: 'shop.test', readonly: null, lock: { held: false }, mode: { actual: 'developer', configured: 'developer' },
+  services: { php: { level: 'ok' } },
+  actions: { module_enable: { available: true }, module_disable: { available: true }, module_update: { available: true },
+    module_check_updates: { available: true } },
+};
+
+async function run() {
+  check('Modules tab registered', TABS.some((t) => t.id === 'modules' && t.iconName === 'blocks'));
+  S.detail = ENV;
+  S.modules = { error: null, modules: [
+    mod('Magento_Catalog', { core: true, package: 'magento/module-catalog', version: '104.0.8' }),
+    mod('Amasty_Base', { package: 'amasty/base', version: '1.18.0', dependents: ['Amasty_Shipping', 'Amasty_Promo'] }),
+    mod('Amasty_Shipping', { package: 'amasty/shipping', enabled: false, sequence: ['Amasty_Base'] }),
+    mod('Amasty_Promo', { package: 'amasty/promo', sequence: ['Amasty_Base'] }),
+    mod('Acme_Local', { source: 'app/code', setupVersion: '1.0.0' }),
+  ] };
+  const app = document.getElementById('app');
+  app.append(ModulesTab(ENV));
+  const names = () => [...app.querySelectorAll('#modules-table tbody tr')].map((r) => r.querySelector('.font-medium').textContent);
+  check('third-party by default', names().join() === 'Amasty_Base,Amasty_Shipping,Amasty_Promo', names().join());
+
+  const [status, source] = app.querySelectorAll('select');
+  source.value = 'all'; source.dispatchEvent(new Event('change'));
+  check('all modules', names().length === 5, names().join());
+  status.value = 'disabled'; status.dispatchEvent(new Event('change'));
+  check('status filter', names().join() === 'Amasty_Shipping', names().join());
+  status.value = 'all'; status.dispatchEvent(new Event('change'));
+  const q = app.querySelector('input[type=search]');
+  q.value = 'amasty/ship'; q.dispatchEvent(new Event('input'));
+  check('search by package', names().join() === 'Amasty_Shipping', names().join());
+  check('search box kept', app.querySelector('input[type=search]') === q);
+  q.value = ''; q.dispatchEvent(new Event('input'));
+  source.value = 'app/code'; source.dispatchEvent(new Event('change'));
+  check('app/code filter', names().join() === 'Acme_Local', names().join());
+  source.value = 'core'; source.dispatchEvent(new Event('change'));
+  check('core filter', names().join() === 'Magento_Catalog', names().join());
+  check('no pager for one page', !app.querySelector('nav[aria-label="Module pages"]'));
+  source.value = 'all'; source.dispatchEvent(new Event('change'));
+
+  // Disabling Amasty_Base warns about its enabled dependent (not the
+  // disabled one); cancel sends nothing.
+  let posted = null;
+  window.api = (path, body) => { posted = { path, body }; return Promise.resolve({ ok: true, data: { operation: 'op-1' } }); };
+  const row = [...app.querySelectorAll('#modules-table tbody tr')].find((r) => r.textContent.includes('Amasty_Base'));
+  row.querySelector('button').click();
+  await tick();
+  const dlg = document.querySelector('dialog[open]');
+  const warn = dlg && dlg.querySelector('[role=alert]');
+  check('dependent warning', warn && warn.textContent.includes('Enabled modules depend on these')
+    && warn.textContent.includes('Amasty_Promo') && !warn.textContent.includes('Amasty_Shipping'), warn && warn.textContent);
+  check('build ticked', dlg.querySelector('#mod-build').checked && !dlg.querySelector('#mod-build').disabled);
+  [...dlg.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Cancel').click();
+  await tick();
+  check('cancel posts nothing', posted === null);
+
+  // Production: the build box is locked on.
+  ENV.mode = { actual: 'production', configured: 'production' };
+  const row2 = [...app.querySelectorAll('#modules-table tbody tr')].find((r) => r.textContent.includes('Amasty_Shipping'));
+  row2.querySelector('button').click();
+  await tick();
+  const dlg2 = document.querySelector('dialog[open]');
+  check('production locks build', dlg2.querySelector('#mod-build').checked && dlg2.querySelector('#mod-build').disabled);
+  [...dlg2.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Enable').click();
+  await tick();
+  check('enable posts build', posted && posted.path === '/api/environments/shop/actions/module_enable'
+    && posted.body.build === true && posted.body.modules.join() === 'Amasty_Shipping', JSON.stringify(posted));
+  check('watch has onDone', S.watch && typeof S.watch.onDone === 'function');
+  if (document.querySelector('dialog[open]')) document.querySelector('dialog[open]').close();
+
+  // Updates, selection and bulk actions.
+  ENV.mode = { actual: 'developer', configured: 'developer' };
+  S.watch = null;
+  S.modules = { error: null, updates: { checkedAt: new Date().toISOString(), ok: true, error: null, stale: false }, modules: [
+    mod('Amasty_Base', { package: 'amasty/base', version: '1.18.0', update: { status: 'update-available', latest: '1.19.2', major: false } }),
+    mod('Amasty_BaseGraphQl', { package: 'amasty/base', version: '1.18.0', update: { status: 'update-available', latest: '1.19.2', major: false } }),
+    mod('Mirasvit_Search', { package: 'mirasvit/search', version: '2.8.3', update: { status: 'update-available', latest: '3.0.0', major: true } }),
+    mod('Acme_Off', { package: 'acme/off', enabled: false, update: { status: 'up-to-date', latest: '1.0.0' } }),
+    mod('Magento_Store', { core: true, package: 'magento/module-store', update: { status: 'managed-by-version-wizard' } }),
+  ] };
+  S.modulesSel = new Set(); S.modulesFilter = { q: '', status: 'all', source: 'all' }; S.modulesPage = 1;
+  app.replaceChildren(ModulesTab(ENV));
+  const box = (name) => app.querySelector(`input[aria-label="Select ${name}"]`);
+  const allBox = () => app.querySelector('input[aria-label="Select all matching modules"]');
+  check('update badge', app.textContent.includes('1.19.2') && app.textContent.includes('Version wizard') && app.textContent.includes('Up to date'));
+  box('Amasty_Base').click();
+  check('select-all mixed', allBox().indeterminate === true);
+  allBox().click();
+  check('select-all skips core', S.modulesSel.size === 4 && !S.modulesSel.has('Magento_Store'), [...S.modulesSel].join());
+  const barText = () => (app.querySelector('[role=toolbar]') || {}).textContent || '';
+  check('bulk bar counts', barText().includes('4 selected') && barText().includes('Update selected (2)')
+    && barText().includes('Enable selected (1)') && barText().includes('Disable selected (3)'), barText());
+  // Update selected: two packages (amasty/base once), the major left out unless ticked.
+  posted = null;
+  const posts = [];
+  window.api = (path, body) => { posts.push({ path, body }); return Promise.resolve({ ok: true, data: { operation: 'op-' + posts.length } }); };
+  [...app.querySelectorAll('[role=toolbar] button')].find((b) => b.textContent.includes('Update selected')).click();
+  await tick();
+  let dlg3 = document.querySelector('dialog[open]');
+  check('review lists packages once', dlg3.querySelectorAll('tbody tr').length === 2 && dlg3.textContent.includes('Include major versions (1)'));
+  check('major unticked by default', !dlg3.querySelector('#upd-major').checked);
+  [...dlg3.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Run dry run').click();
+  await tick();
+  check('dry run posted', posts.length === 1 && posts[0].body.dryRun === true && posts[0].body.packages.join() === 'amasty/base'
+    && posts[0].path.endsWith('/actions/module_update'), JSON.stringify(posts));
+  // The dry run passes: apply asks first, then posts the same packages for real.
+  S.watch.rec = { status: 'done' };
+  S.watch.onDone(S.watch);
+  await tick();
+  const apply = [...document.querySelectorAll('dialog[open] button')].find((b) => b.textContent.trim() === 'Apply update');
+  check('apply offered after dry run', !!apply);
+  apply.click();
+  await tick();
+  check('apply posts the same packages', posts.length === 2 && posts[1].body.dryRun === false
+    && posts[1].body.packages.join() === 'amasty/base' && posts[1].body.build === true, JSON.stringify(posts[1]));
+  // A failed dry run never offers apply.
+  S.modulesSel = new Set(['Mirasvit_Search']);
+  app.replaceChildren(ModulesTab(ENV));
+  const mirRow = [...app.querySelectorAll('#modules-table tbody tr')].find((r) => r.textContent.includes('Mirasvit_Search'));
+  [...mirRow.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Update').click();
+  await tick();
+  dlg3 = document.querySelector('dialog[open]');
+  check('single major: no major checkbox needed', !dlg3.textContent.includes('Include major') && dlg3.textContent.includes('Major'));
+  [...dlg3.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Run dry run').click();
+  await tick();
+  S.watch.rec = { status: 'failed' };
+  S.watch.onDone(S.watch);
+  await tick();
+  check('major update posted', posts[2].body.packages.join() === 'mirasvit/search' && posts[2].body.dryRun === true, JSON.stringify(posts[2]));
+  check('failed dry run: no apply', posts.length === 3 && !document.querySelector('dialog[open]'));
+
+  // 120 third-party modules: 50 a page, with the shadcn pager.
+  S.modules = { error: null, modules: Array.from({ length: 120 }, (_, i) => mod(`Acme_M${String(i).padStart(3, '0')}`, { package: `acme/m${i}` })) };
+  S.modulesPage = 1;
+  app.replaceChildren(ModulesTab(ENV));
+  const pager = () => app.querySelector('nav[aria-label="Module pages"]');
+  const pageButtons = () => [...pager().querySelectorAll('li > button')].map((b) => b.textContent.trim());
+  check('page 1 rows', names().length === 50 && names()[0] === 'Acme_M000', names()[0]);
+  check('pager buttons', pageButtons().join() === 'Previous,1,2,3,Next', pageButtons().join());
+  check('previous disabled on page 1', pager().querySelector('button[aria-label="Go to previous page"]').disabled);
+  check('current page marked', pager().querySelector('[aria-current=page]').textContent === '1');
+  [...pager().querySelectorAll('button')].find((b) => b.textContent.trim() === '3').click();
+  check('page 3 rows', names().length === 20 && names()[0] === 'Acme_M100', names()[0]);
+  check('next disabled on last page', pager().querySelector('button[aria-label="Go to next page"]').disabled);
+  check('range text', app.textContent.includes('Showing 101–120 of 120 matching'));
+  const q2 = app.querySelector('input[type=search]');
+  q2.value = 'Acme_M11'; q2.dispatchEvent(new Event('input'));
+  check('filter resets to page 1', S.modulesPage === 1 && names().length === 10 && !pager(), names().length);
+
+  // Magento releases: the card, the banner (dismissed per version), the overview badge.
+  try { localStorage.removeItem('release-dismissed:shop'); } catch (e) { /* ignore */ }
+  const REL = Object.assign({}, ENV, {
+    magentoVersion: { value: '2.4.8-p3' }, magentoEdition: 'community', workflows: { version: { available: true } },
+    releases: { installed: '2.4.8-p3', latestPublished: '2.4.9', latestCompatible: '2.4.8-p6', eligible: ['2.4.8-p6', '2.4.8-p5'],
+      check: { fetchedAt: new Date().toISOString(), lastError: null, stale: false, refreshing: false },
+      releases: [
+        { version: '2.4.10', state: 'published', compatible: false, reason: 'No m2/ catalog line for 2.4.10 — add a folder (m2/README.md).', note: null },
+        { version: '2.4.8-p6', state: 'derived', compatible: true, reason: null, note: null, phpChange: { from: '8.3', to: '8.4' } },
+        { version: '2.4.8-p5', state: 'catalog', compatible: true, reason: null, note: null },
+      ] },
+  });
+  const card = ReleasesCard(REL);
+  check('releases card', card.textContent.includes('Latest you can move to') && card.textContent.includes('2.4.8-p6')
+    && card.textContent.includes('Not in the wizard yet') && card.textContent.includes('Available · PHP 8.3 → 8.4'), card.textContent);
+  check('how to upgrade', card.textContent.includes('How to upgrade') && card.textContent.includes('moves that pin to 8.4'));
+  check('how to offer a missing one', card.textContent.includes('doesn’t offer yet') && card.textContent.includes('bin/m2/check-requirements')
+    && card.textContent.includes('m2/2.4.10/version.env'));
+  check('releases card wizard button', [...card.querySelectorAll('button')].some((b) => b.textContent.includes('Open the version wizard')));
+  const banner = ReleaseBanner(REL);
+  check('release banner', banner && banner.textContent.includes('Magento 2.4.8-p6 is available') && banner.textContent.includes('PHP 8.4'));
+  window.render = () => {};
+  banner.querySelector('button[title="Dismiss"]').click();
+  check('banner dismissed for that version', ReleaseBanner(REL) === null);
+  check('a newer one shows again', !!ReleaseBanner(Object.assign({}, REL, { releases: Object.assign({}, REL.releases, { latestCompatible: '2.4.8-p7' }) })));
+  check('no banner when nothing fits', ReleaseBanner(Object.assign({}, REL, { releases: Object.assign({}, REL.releases, { latestCompatible: null }) })) === null);
+  const offline = ReleasesCard(Object.assign({}, REL, { releases: Object.assign({}, REL.releases, { check: { fetchedAt: null, lastError: 'URLError: refused' } }) }));
+  check('offline card', offline.textContent.includes('couldn’t reach Adobe') && offline.textContent.includes('m2/ catalog only'));
+  check('not installed card', ReleasesCard(Object.assign({}, REL, { releases: null, magentoVersion: { value: null } })).textContent.includes('once Magento is installed'));
+}
+
+run().catch((e) => check('run', false, String(e && e.stack || e))).finally(() => {
+  const failed = results.filter((r) => r.startsWith('FAIL')).length;
+  document.getElementById('result').textContent = 'DONE ' + (failed ? 'FAILED ' + failed : 'OK') + ' ' + results.length + '\n' + results.join('\n');
+});
+  </script>
+</body>
+</html>

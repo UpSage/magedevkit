@@ -9,6 +9,10 @@
 
 ui_step setup 7
 
+# dump_prod_summary — which site a local dump is from
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/prod-urls.sh"
+
 if [ "$FRESH_SOURCE" = 1 ]; then
     REVIEW_MAGENTO="Fresh download: $MAGENTO_PACKAGE $MAGENTO_VERSION"
     REVIEW_DATA="None — an empty store"
@@ -16,7 +20,15 @@ else
     REVIEW_MAGENTO="Existing code in magento/ (Magento ${DETECTED_VERSION:-version not detected})"
     if [ "$DO_DB_REFRESH" = 1 ]; then
         if [ "${PRESET_PROD_CONFIG_CHOICE:-Y}" = Y ]; then
-            REVIEW_DATA="Import $(basename "$PRESET_DB_SOURCE") — production copy, URLs rewritten for this site"
+            # A local file is read now; a URL only after its download, and
+            # the refresh asks to confirm the rewrite either way.
+            REVIEW_DATA="Import $(basename "$PRESET_DB_SOURCE") — production copy"
+            if [ -f "$PRESET_DB_SOURCE" ]; then
+                DUMP_FROM="$(dump_prod_summary "$PRESET_DB_SOURCE")"
+                REVIEW_DATA+=" from ${DUMP_FROM:-a site the dump doesn't name (you'll be asked)}, URLs rewritten to https://${APP_DOMAIN}/"
+            else
+                REVIEW_DATA+=", URLs rewritten to https://${APP_DOMAIN}/ — read from the dump after the download; you'll confirm them then"
+            fi
         else
             REVIEW_DATA="Import $(basename "$PRESET_DB_SOURCE") — as-is"
         fi

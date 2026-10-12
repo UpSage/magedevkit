@@ -148,6 +148,7 @@ ASKPASS
             rm -rf "$MAGENTO_DIR" && mkdir -p "$MAGENTO_DIR"
         fi
 
+        releases_refresh
         choose_magento_version
         MAGENTO_VERSION="$(m2_get MAGENTO_VERSION)"
         MAGENTO_PACKAGE="$(m2_get MAGENTO_PACKAGE)"

@@ -14,6 +14,7 @@
 @source "./dash-core.js";
 @source "./dash-env.js";
 @source "./dash-git.js";
+@source "./dash-modules.js";
 @source "./dashboard.js";
 
 @custom-variant dark (&:where(.dark, .dark *));

@@ -40,7 +40,9 @@ if HERE not in sys.path:
 import envs  # noqa: E402
 import ops  # noqa: E402
 import gitrepo  # noqa: E402
+import modules  # noqa: E402
 import pipeline  # noqa: E402
+import releases  # noqa: E402
 import webcore  # noqa: E402
 
 UI_DIR = os.path.join(HERE, "ui")
@@ -52,11 +54,13 @@ STATIC = {
     "/dash-core.js": ("dash-core.js", "text/javascript; charset=utf-8"),
     "/dash-env.js": ("dash-env.js", "text/javascript; charset=utf-8"),
     "/dash-git.js": ("dash-git.js", "text/javascript; charset=utf-8"),
+    "/dash-modules.js": ("dash-modules.js", "text/javascript; charset=utf-8"),
     "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
     "/theme.js": ("theme.js", "text/javascript; charset=utf-8"),
     "/wizard.css": ("wizard.css", "text/css; charset=utf-8"),
 }
 ENV_ROUTE = re.compile(r"^/api/environments/([^/]+)(?:/(.*))?$")
+RELEASES_CATALOG = os.path.join(CODE_DIR, "m2")
 LOG = logging.getLogger("dashboard")
 
 
@@ -69,6 +73,7 @@ class Dashboard:
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=8)
         self.disk = {}       # env id -> {"status", "at", "data"}
         self.disk_lock = threading.Lock()
+        self.releases_lock = threading.Lock()  # one release check at a time
 
     def environments(self):
         return self.discovery.environments()
@@ -92,13 +97,62 @@ class Dashboard:
             running = next((r for r in recent if r.get("status") == "running"), None)
             s["lock"] = {"held": held, "text": text}
             s["operation"] = {"running": running, "last": recent[0] if recent else None}
+            rel = self.env_releases(e, s["magentoVersion"]["value"])
+            s["releaseUpdate"] = rel["latestCompatible"] if rel else None
             return s
 
+        self.releases_status()  # starts the daily background check when it's due
         items = list(self.pool.map(one, sorted(found.values(), key=lambda e: e.id)))
         return {"environments": items, "edge": envs.edge_status(projects), "warnings": warnings,
                 "docker": {"available": derr is None, "error": derr}, "roots": self.discovery.roots,
                 "instancesRoot": self.instances_root(), "generatedAt": time.time(),
                 "platformVersion": webcore.platform_version(CODE_DIR)}
+
+    # -- Magento releases (releases.py) ------------------------------------------
+    # The page only ever reads the saved copy; the download runs in the
+    # background at most once a day (releases.refresh --if-stale, which also
+    # waits an hour after a failed try), or when Check now asks for it.
+
+    def releases_status(self, kick=True):
+        data = releases.load()
+        stale = releases.age(data.get("fetchedAt")) > releases.STALE_AFTER
+        if kick and stale and not self.releases_lock.locked():
+            threading.Thread(target=self.refresh_releases, kwargs={"if_stale": True, "quiet": True}, daemon=True).start()
+        return {"fetchedAt": data.get("fetchedAt"), "lastAttempt": data.get("lastAttempt"), "lastError": data.get("lastError"),
+                "stale": stale, "refreshing": self.releases_lock.locked()}
+
+    def refresh_releases(self, if_stale=False, quiet=False):
+        if not self.releases_lock.acquire(blocking=False):
+            if quiet:
+                return None
+            raise ops.OpError(409, "A release check is already running.")
+        try:
+            releases.refresh(RELEASES_CATALOG, if_stale=if_stale, timeout=8)
+        except Exception:  # a background check never takes the dashboard down
+            LOG.exception("release check")
+            if not quiet:
+                raise
+        finally:
+            self.releases_lock.release()
+        return self.releases_status(kick=False)
+
+    def env_releases(self, e, installed):
+        """releases.classify for one environment: what it could move to with
+        its own platform repo's m2/ catalog. None when that can't be read."""
+        if not installed:
+            return None  # nothing to compare with until Magento is there
+        edition, php = envs.magento_edition(e.magento_dir), envs.project_php(e.magento_dir)
+        saved = os.path.join(releases.cache_root(), "releases.json")
+        try:
+            mtime = os.path.getmtime(saved)
+        except OSError:
+            mtime = None
+        key = ("releases", e.code_dir, mtime, installed, edition, php)
+        try:
+            return envs.CACHE.get(key, 300, lambda: releases.classify(installed, edition, php, os.path.join(e.code_dir, "m2")))
+        except Exception:
+            LOG.exception("releases for %s", e.id)
+            return None
 
     @staticmethod
     def instances_root():
@@ -144,6 +198,8 @@ class Dashboard:
             pipeline.drop_cache()
             s["git"] = envs.git_info(e.magento_dir, with_status=True)
         s["pipeline"] = pipeline.info(e)
+        rel = self.env_releases(e, s["magentoVersion"]["value"])
+        s["releases"] = dict(rel, check=self.releases_status()) if rel else None
         s["olderLogs"] = ops.older_logs(e)
         s["logSources"] = ops.log_sources(e)
         s["actions"] = {k: {"label": v["label"], "confirm": v.get("confirm"), "mutating": v["mutating"],
@@ -236,6 +292,8 @@ def make_handler(dash, port):
             qs = urllib.parse.parse_qs(url.query)
             if url.path == "/api/environments":
                 return self.send(200, dash.overview())
+            if url.path == "/api/releases":
+                return self.send(200, dash.releases_status())
             if url.path.startswith("/api/destroyed/"):
                 return self.send(200, ops.destroy_status(dash.destroy_dir, url.path[len("/api/destroyed/"):]))
             m = ENV_ROUTE.match(url.path)
@@ -261,6 +319,8 @@ def make_handler(dash, port):
                 return self.send(200, rec)
             if rest == "git":
                 return self.send(200, gitrepo.status(e))
+            if rest == "modules":
+                return self.send(200, modules.listing(e))
             if rest == "destroy-check":
                 return self.send(200, ops.destroy_check(e))
             if rest == "git/diff":
@@ -282,6 +342,10 @@ def make_handler(dash, port):
             self.safely(lambda: self.post_api(url, body))
 
         def post_api(self, url, body):
+            if url.path == "/api/releases/refresh":
+                res = dash.refresh_releases()
+                LOG.info("release check: %s", res.get("lastError") or "ok")
+                return self.send(200, res)
             if url.path == "/api/instances":
                 res = dash.new_instance(body.get("name"))
                 LOG.info("new instance %s → %s", res["id"], res["operation"])

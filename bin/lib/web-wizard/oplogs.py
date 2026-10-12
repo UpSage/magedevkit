@@ -46,12 +46,14 @@ class Redactor:
         # Every string in auth.json is a credential (repo.magento.com's
         # "username" is the access key pair's public half).
         def walk(x):
-            if isinstance(x, dict):
+            if isinstance(x, str):
+                vals.append(x)
+            elif isinstance(x, dict):
                 for v in x.values():
-                    if isinstance(v, str):
-                        vals.append(v)
-                    else:
-                        walk(v)
+                    walk(v)
+            elif isinstance(x, list):  # e.g. a token list some repositories use
+                for v in x:
+                    walk(v)
         walk(data)
         return vals
 

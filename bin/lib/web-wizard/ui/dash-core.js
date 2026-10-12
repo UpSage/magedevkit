@@ -1,6 +1,6 @@
-// MageDevKit dashboard, part 1 of 4: state, helpers, polling, actions and the
+// MageDevKit dashboard, part 1 of 5: state, helpers, polling, actions and the
 // page shell. Loaded in order by dashboard.html — dash-core.js, dash-env.js,
-// dash-git.js, dashboard.js (boot) — as plain scripts sharing one global
+// dash-git.js, dash-modules.js, dashboard.js (boot) — as plain scripts sharing one global
 // scope; kit.js (DOM helpers, icons, shadcn/ui recipes) comes first.
 
 // MageDevKit dashboard client — every checkout's status, actions and the
@@ -18,7 +18,8 @@ const SERVICE_ROWS = [
 ];
 const TABS = [
   { id: 'overview', label: 'Overview', iconName: 'layoutGrid' }, { id: 'containers', label: 'Containers', iconName: 'server' },
-  { id: 'magento', label: 'Magento', iconName: 'wrench' }, { id: 'workflows', label: 'Workflows', iconName: 'zap' },
+  { id: 'magento', label: 'Magento', iconName: 'wrench' }, { id: 'modules', label: 'Modules', iconName: 'blocks' },
+  { id: 'workflows', label: 'Workflows', iconName: 'zap' },
   { id: 'pipeline', label: 'Pipeline', iconName: 'rocket' }, { id: 'git', label: 'Git', iconName: 'gitBranch' },
   { id: 'logs', label: 'Logs', iconName: 'file' }, { id: 'operations', label: 'Operations', iconName: 'history' },
 ];
@@ -30,6 +31,12 @@ const OP_BADGE = {
   starting: ['Starting', 'secondary'], running: ['Running', 'secondary'], done: ['Done', 'success'], failed: ['Failed', 'destructive'],
   cancelled: ['Cancelled', 'secondary'], interrupted: ['Interrupted', 'warning'],
 };
+
+// The Modules tab's filters on first load and per environment: third-party
+// modules, any status, no search.
+function modulesFilterDefault() {
+  return { q: '', status: 'all', source: 'third-party' };
+}
 
 const S = {
   route: { view: 'overview' },
@@ -46,6 +53,11 @@ const S = {
   gitSel: { staged: new Set(), changes: new Set() },
   gitDiff: null,      // { path, staged, data }
   gitNeedsLogin: false,
+  modules: null,      // GET …/modules — this environment's Magento modules
+  modulesError: null,
+  modulesFilter: modulesFilterDefault(),
+  modulesPage: 1,
+  modulesSel: new Set(),  // selected module names (all pages)
 };
 
 const root = document.getElementById('app');
@@ -98,6 +110,11 @@ function dockerStatus(env) {
 // operation holds the instance lock.
 function envBlocked(env) {
   return !!env.readonly || S.busy || !!(env.lock && env.lock.held);
+}
+
+// Whether this environment's platform code has action `name` and may run it.
+function actionAvailable(env, name) {
+  return !env.readonly && !!env.actions[name] && !!env.actions[name].available;
 }
 
 function statusFor(env, key) {
@@ -198,6 +215,8 @@ window.addEventListener('hashchange', () => {
     S.git = null; S.gitError = null; S.gitDiff = null; S.gitNeedsLogin = false;
     S.gitSel = { staged: new Set(), changes: new Set() };
     gitMessage = null;
+    S.modules = null; S.modulesError = null; S.modulesFilter = modulesFilterDefault(); S.modulesPage = 1; S.modulesSel = new Set();
+    modSearch = null;
   }
   render();
   refresh();
@@ -214,6 +233,7 @@ async function refresh() {
     S.error = res.ok ? null : serverError(res);
     if (S.route.tab === 'logs' && S.logs.follow) await loadLog(true);
     if (S.route.tab === 'git') await loadGit();
+    if (S.route.tab === 'modules') await loadModules();
     // The sidebar lists every environment: refreshed every 30 s here.
     if (!S.overview || Date.now() - (S.overviewAt || 0) > 30000) {
       const o = await getJSON('/api/environments');
@@ -259,7 +279,7 @@ async function runAction(env, name, body, opts = {}) {
   const res = await api(`/api/environments/${encodeURIComponent(env.id)}/actions/${name}`, body || {});
   if (!res.ok) return showError(`${label} didn’t start`, res);
   toast(`${label} started`);
-  S.watch = { envId: env.id, opId: res.data.operation, label, text: '', rec: { status: 'starting' } };
+  S.watch = { envId: env.id, opId: res.data.operation, label, text: '', rec: { status: 'starting' }, onDone: opts.onDone };
   watchPre = null;
   watchOperation();
   refresh();

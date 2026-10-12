@@ -1,4 +1,4 @@
-// MageDevKit dashboard, part 3 of 4: the Git tab — status, staging (two
+// MageDevKit dashboard, part 3 of 5: the Git tab — status, staging (two
 // columns with drag and drop), commit, branches, fetch/pull/push. Uses
 // dash-core.js; see its header for the load order.
 'use strict';

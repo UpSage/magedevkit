@@ -50,6 +50,9 @@ mdk mode production               # also: ownership single|two-owner, permission
 mdk pipeline-wizard               # make magento/ pipeline-ready for an EC2 environment (see "Deploying to EC2")
 mdk build                         # Magento-only build: setup:upgrade, di:compile, static -f, cache:flush (maintenance on; containers untouched)
 mdk build --composer update vendor/pkg   # composer first, then the same build
+mdk module disable --build Vendor_Module   # turn modules on/off, then the same build
+mdk module check-updates          # composer outdated for composer.json's packages (the Modules tab shows it)
+mdk module update --dry-run vendor/pkg:^2.0   # check an update without changing anything; drop --dry-run to apply + build
 mdk rebuild-wizard                # full rebuild: also resets compiled code, restarts php/nginx/varnish, config, reindex
 mdk --version                     # the platform version (VERSION file, shown in every page's footer)
 mdk rebuild --composer update vendor/pkg   # composer first, then the full rebuild (terminal)
@@ -270,7 +273,10 @@ database:
 1. Pick the **version** and **security patch** — menus are built from the folders in
    [`m2/`](m2/README.md) (`m2/2.4.8/`, `m2/2.4.8/p1` … `p5`, `m2/2.4.9/`, …). Adding a folder adds a
    menu entry; each holds a `version.env` (`MAGENTO_VERSION`, optional `MAGENTO_PACKAGE` and stack
-   pins) and optionally an executable `post-install` hook for version-specific commands.
+   pins) and optionally an executable `post-install` hook for version-specific commands. A newer
+   patch Adobe has published but `m2/` doesn't have yet is offered too — and pre-selected as the
+   latest — when the stack versions of the newest catalogued patch on its line pass Adobe's
+   requirements for it (see "New releases" in [`m2/README.md`](m2/README.md)).
 2. Give your **repo.magento.com credentials** — an existing `auth.json`, or the public/private keys.
    They're kept outside `magento/` until the download finishes (create-project needs an empty
    directory), then saved to `magento/auth.json`.
@@ -331,7 +337,13 @@ a dashboard action. The work itself lives under `bin/lib/` (`sync-db-config-engi
   those to this site: the unsecure and secure base URLs (they can differ), the link URLs, the media
   URLs (a CDN included), and the cookie domain when there is one. Nothing is typed in, so nothing
   can be mistyped.
-  - The values are saved to `.env` as `PROD_*`. A later dump that doesn't carry them (no
+  - **You check the rewrite before it runs.** The refresh lists every change as "from → to" (store
+    URLs, media URLs, cookie domain) plus the website/store-view URLs it leaves alone, and asks
+    "Rewrite the dump's URLs like this?". No stops the run with nothing backed up, dropped or
+    saved. A run with nobody to answer only logs the list (it got that far because the replace
+    was confirmed in advance with `PRESET_REPLACE_CHOICE=Y`). The setup review already shows the
+    site a local dump file is from; a dump given as a URL is read after its download.
+  - Once confirmed, the values are saved to `.env` as `PROD_*`. A later dump that doesn't carry them (no
     `core_config_data`) falls back to those; with none saved either, the refresh asks — and stops if
     nobody can answer.
   - A dump that already uses this site's domain is imported without rewriting.
@@ -356,7 +368,8 @@ a dashboard action. The work itself lives under `bin/lib/` (`sync-db-config-engi
 version — for a fresh install and an imported store alike. The current version is read from
 `magento/composer.lock` and recorded as `MAGENTO_VERSION` in `.env`.
 
-- **Upgrade** — to any newer version or patch in the `m2/` catalog. Review screen (stack changes
+- **Upgrade** — to any newer version or patch in the `m2/` catalog, plus newer patches Adobe has
+  published that pass the same check as in setup (labelled "new: versions from …"). Review screen (stack changes
   included) → typed confirmation (browser) → **snapshot** → maintenance on → the target's stack
   pins (PHP, MariaDB, OpenSearch, … — containers rebuilt when they change; a `config.platform.php`
   pin in composer.json moves along with PHP) → `composer require-commerce` (or `composer require`
@@ -636,6 +649,51 @@ the sidebar. The platform version (the repo's `VERSION` file) is at the foot of 
       doesn't make a change live;
     - **Full rebuild**: what the refresh and version wizards run, in the wizard. On top of the build
       it resets compiled code with php/nginx/varnish restarts, applies the platform config and reindexes;
+    - **Magento releases**: the installed version, the latest release, and the latest one this
+      environment can move to, with every newer release marked **Available**, **Available · PHP x → y**
+      (the version wizard moves composer.json's `config.platform.php` pin along, so extensions must
+      support the new PHP) or **Not in the wizard yet** (no catalog line, or its stack check failed).
+      Info boxes say how the upgrade goes and how to add a missing release (`bin/m2/check-requirements`,
+      then an `m2/` folder). The list is Adobe's system requirements file,
+      checked in the background at most once a day; **Check now** checks right away. Offline it
+      shows the last copy, or the `m2/` catalog alone. When a newer compatible release exists, the
+      environment page shows a **"Magento X is available"** banner (dismissed per version, in this
+      browser), and the overview card a badge. Upgrading always goes through the version wizard —
+      the dashboard never starts one by itself;
+  - **Modules**: every module from `app/etc/config.php`, with its status, package, version and
+    whether it's Magento core (Magento's own modules and everything the product metapackage
+    requires). Search by module or package name, and filter by status and by source — each module is
+    in exactly one: **Third-party** (the default), **app/code** or **Magento core**, or show **All
+    modules**. 50 a page, with a pager. Read from the files, so the tab works with the stack
+    stopped.
+    - **Enable / Disable** runs `bin/magento module:enable|disable --clear-static-content` (never
+      `--force`, so Magento's own dependency check still refuses a change that would break another
+      module). The dialog first lists the enabled modules that depend on it, or the disabled ones
+      it needs.
+    - **Build Magento afterwards** is ticked by default: the change then runs inside the same build
+      as Build Magento. Unticked, only the module list changes. In production mode it can't be
+      unticked — the code is locked and compiled there.
+    - **Check for updates** runs `composer outdated --direct --all` and saves the result in
+      `logs/module-updates.json`. Each module then shows one update status: an update (with
+      **Major** when it's a new major version), up to date, can't check (with the reason — no check
+      yet, the check failed, or the package comes with another one), not updatable (`app/code`), or
+      version wizard (Magento's own packages, which move with Magento). A failed check shows
+      composer's message; private repositories need their credentials in `magento/auth.json`.
+    - **Update** (one package) or **Update selected**: a review of installed → latest, then a
+      **dry run** (`composer require --dry-run --update-with-dependencies`) that resolves everything
+      and changes nothing. Only after it passes does **Apply update** run the same command for real,
+      followed by the build. Only those packages and their own dependencies move — never a full
+      `composer update`. Minor and patch updates keep composer.json's constraint; a major one sets
+      it to `^<latest>`, and a bulk update leaves majors out unless **Include major versions** is
+      ticked. If composer fails, `composer.json` and `composer.lock` are put back and
+      `composer install` runs. If composer succeeds but the build fails, the new `composer.lock` is
+      kept and the message says to run Build Magento again. Unticking the build (developer/default
+      mode) runs only `setup:upgrade` and `cache:flush`.
+    - **Select** rows (the header box selects every matching row on every page, never core
+      modules) for **Update selected**, **Enable selected** and **Disable selected**: one composer
+      run, or one `module:enable|disable` call, for all of them (at most 100).
+    - Not covered: `app/code` modules (no package), packages composer.json doesn't require directly
+      (`--direct`), and Adobe Commerce packages without a repo.magento.com entitlement;
   - **Workflows**: the setup, refresh and version wizards (the pipeline, rebuild and ownership
     wizards open from the Pipeline and Magento tabs);
   - **Pipeline**: whether `magento/` is pipeline-ready (see "Deploying to EC2");
@@ -684,6 +742,8 @@ browser ──> dashboard.py   (127.0.0.1 only; status + JSON API)
               │    ├─ destroy.py  deleting an instance
               │    └─ oprun.py    detached runner: one operation, its log and record
               ├─ gitrepo.py the Git tab        pipeline.py  the Pipeline tab
+              ├─ modules.py the Modules tab (reads config.php, module.xml, composer.lock)
+              ├─ releases.py Magento releases from Adobe (shared with the wizards' version menus)
               └─ webcore.py shared with the wizard server: auth, login/static files, headers,
                             redaction, records, child-process environment (no tokens)
                     │
@@ -717,6 +777,11 @@ browser ──> dashboard.py   (127.0.0.1 only; status + JSON API)
   - `bin/mode/<mode>` and `bin/mode/show`;
   - `bin/local/magento-build [--composer install|update [packages]]` (Build Magento, and the
     composer buttons);
+  - `bin/local/magento-module enable|disable [--build] modules` (the Modules tab; names are checked
+    against `app/etc/config.php`, at most 100);
+  - `bin/local/magento-module check-updates` and `update [--dry-run] [--quick] package:constraint …`
+    (the constraints are made by the server from the last check and composer.json — the page only
+    names packages, and a package without an update there, Magento's own or `app/code`, is refused);
   - `bin/composer validate` (plus `install` / `update [packages]`, kept in the API but not on a
     button).
 
@@ -804,8 +869,15 @@ against fake instances and a fake `docker`, covering:
 - the bash helpers that guard input (`tests/test_bash_helpers.py`: `set_env_var`, `env_get`,
   sed literals, hostnames, live-site URLs, composer arguments, backup pruning, the S3 storage flow,
   per-repo git logins and identities, the refresh's "never replace without a yes" rule);
-- `kit.js` in a real browser (`tests/test_js.py` runs `tests/js/kit-tests.html` in headless
-  Chrome/Chromium; skipped when none is installed).
+- the Modules tab's data (`tests/test_modules.py`: module states, update statuses, which updates
+  may run) and `bin/local/magento-module` (`tests/test_magento_module.py`: the command order with
+  and without the build, production, the update check, dry runs, and putting composer.json and
+  composer.lock back when composer fails);
+- Magento releases (`tests/test_releases.py`: Adobe's file, the stack check behind a derived
+  entry, offline fallback, what an environment can move to);
+- `kit.js` and the dashboard's tabs in a real browser (`tests/test_js.py` runs
+  `tests/js/kit-tests.html` and `tests/js/dash-tests.html` in headless Chrome/Chromium; skipped
+  when none is installed).
 
 ## Architecture & conventions
 
@@ -928,7 +1000,7 @@ initializes the volume, and `app/etc/env.php` keeps its own copy. Either run the
 
 ## Changelog
 
-### Unreleased (1.0.1)
+### 1.1.0 (2026-10-12)
 
 **Renamed: MageRunner is now MageDevKit (Magento Developer Kit), and the `mrn` command is now `mdk`.**
 Containers, volumes, data and instance settings are unchanged. To move an existing install:
@@ -943,6 +1015,31 @@ git -C ~/Sites/magedevkit remote set-url origin https://github.com/UpSage/magede
 `install-mdk` only re-points instances whose recorded repo folder no longer exists, and lists the
 `platform up -d` commands instead of running them. Pipeline kits generated before the rename keep
 their old header until the pipeline wizard regenerates them; nothing else reads it.
+
+**The dump's URLs are shown before they're rewritten.** A database refresh now lists every URL and
+the cookie domain it is about to rewrite ("from → to") and asks before going on; answering No
+changes nothing, `.env` included. The setup review shows which site a local dump file is from.
+
+**Modules tab.** The dashboard lists every Magento module (status, package, version, core or not)
+with search and filters, and turns modules on or off — with Magento's own dependency check, and
+the Magento build afterwards by default (always in production mode). In a terminal:
+`mdk module enable|disable [--build] Vendor_Module …`.
+
+**New Magento releases in the wizards.** Setup's version menu and the version wizard's upgrade
+menu also offer patches Adobe has published but `m2/` doesn't have yet (read from Adobe's system
+requirements file, at most once a day): with the stack versions of the newest catalogued patch on
+that line, only when every one passes Adobe's requirements for the new patch. A folder in `m2/`
+always wins; offline the menus are the catalog alone. A new minor line (e.g. 2.4.10) still needs
+a catalog folder.
+
+**Release notifications.** The Magento tab has a **Magento releases** card (what this environment
+can move to, what a PHP change means, and how to add a release the wizard doesn't offer yet), the environment page a dismissable "Magento X is
+available" banner, and the overview card a badge — all pointing at the version wizard.
+
+**Module updates.** **Check for updates** on the Modules tab (`mdk module check-updates`) shows
+which packages have a newer version. Update one, or select several: a dry run first, then the
+update of just those packages and the Magento build — with composer.json and composer.lock put
+back if composer fails.
 
 ---
 

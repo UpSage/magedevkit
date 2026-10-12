@@ -11,48 +11,80 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
 # else. The containers aren't stopped, restarted or recreated (that's the
 # full rebuild, bin/local/rebuild).
 #
-#   mdk build [--composer install|update [vendor/package ...]]
+#   mdk build [--quick] [--composer install|update [vendor/package ...]]
+#   mdk build [--quick] --composer require vendor/package:constraint ...
+#   mdk build --module enable|disable Vendor_Module ...
 #
-#   [composer install | composer update [packages]]
+#   [composer install | update [packages] | require --update-with-dependencies specs]
+#   [bin/magento module:enable|disable --clear-static-content modules]
 #   bin/magento maintenance:enable
 #   bin/magento setup:upgrade
-#   bin/magento setup:di:compile
-#   bin/magento setup:static-content:deploy -f
+#   bin/magento setup:di:compile                 (not with --quick)
+#   bin/magento setup:static-content:deploy -f   (not with --quick)
 #   bin/magento cache:flush
 #   bin/magento maintenance:disable
 #
 # In production mode the code is unlocked first and locked again at the end.
 # Maintenance mode is turned off and the lock restored even when a step fails.
+# --composer require is the Modules tab's package update: only the named
+# packages (and their own dependencies) move, and if composer fails,
+# composer.json and composer.lock are put back and composer install runs.
+# --quick (developer/default mode only) skips di:compile and static content.
+# --module is how bin/local/magento-module --build (the dashboard's Modules
+# tab) changes modules: never with --force, so Magento's dependency check
+# still refuses a change that would break another module.
 
 COMPOSER_MODE=""
 PACKAGES=()
+MODULE_OP=""
+MODULES=()
+QUICK=0
 while [ $# -gt 0 ]; do
     case "$1" in
+        --quick) QUICK=1; shift ;;
         --composer)
-            [ -n "${2:-}" ] || fail "--composer needs install or update."
+            [ -n "${2:-}" ] || fail "--composer needs install, update or require."
             COMPOSER_MODE="$2"; shift 2
             PACKAGES=("$@"); break ;;
+        --module)
+            [ -n "${2:-}" ] || fail "--module needs enable or disable."
+            MODULE_OP="$2"; shift 2
+            MODULES=("$@"); break ;;
         -h|--help) script_help "$0"; exit 0 ;;
-        *) fail "Unknown option '$1' (expected --composer install|update [packages])." ;;
+        *) fail "Unknown option '$1' (expected --quick, --composer install|update|require [packages] or --module enable|disable modules)." ;;
     esac
 done
 composer_check "$COMPOSER_MODE" "${PACKAGES[@]}"
+if [ -n "$MODULE_OP" ]; then
+    case "$MODULE_OP" in enable|disable) ;; *) fail "--module takes enable or disable (got '$MODULE_OP')." ;; esac
+    module_check "${MODULES[@]}"
+fi
 
 require_env_file
 MAGENTO_MODE="$(env_get "$ENV_FILE" MAGENTO_MODE)"
+[ "$QUICK" = 0 ] || [ "$MAGENTO_MODE" != production ] \
+    || fail "--quick skips di:compile and static content, which production mode needs — run the full build."
 wizard_lock
 
 step() { STEP="$1"; printf '\n→ %s\n' "$1"; }
 
 STEP="checking the stack"
-"$PLATFORM_DIR/bin/platform" ps --status running --services 2>/dev/null | grep -qx php \
-    || fail "The php container isn't running — start the environment first (this build doesn't start or recreate containers)."
+require_php_running
 
 LOCK_BEFORE="$(file_sha256 "$MAGENTO_DIR/composer.lock")"
 MAINT=0
 UNLOCKED=0
+SNAPSHOT=""        # composer.json + composer.lock before a require, put back if it fails
+COMPOSER_DONE=0
 finish() {
     local rc=$?
+    if [ "$rc" -ne 0 ] && [ -n "$SNAPSHOT" ] && [ "$COMPOSER_DONE" = 0 ]; then
+        echo; echo "→ composer failed — putting composer.json and composer.lock back, then composer install"
+        cp "$SNAPSHOT/composer.json" "$SNAPSHOT/composer.lock" "$MAGENTO_DIR/" \
+            && "$PLATFORM_DIR/bin/composer" install --no-interaction \
+            || echo "⚠ Couldn't restore the packages — run: $(cmd_hint composer install)"
+    fi
+    [ -z "$SNAPSHOT" ] || rm -rf "$SNAPSHOT"
     if [ "$MAINT" = 1 ]; then
         echo; echo "→ maintenance:disable"
         "$MAGENTO" maintenance:disable || echo "⚠ Couldn't turn maintenance mode off — run: $(cmd_hint magento maintenance:disable)"
@@ -60,7 +92,9 @@ finish() {
     if [ "$UNLOCKED" = 1 ]; then
         "$PLATFORM_DIR/bin/permissions/lock" >/dev/null 2>&1 || echo "⚠ Couldn't lock the code again — run: $(cmd_hint permissions lock)"
     fi
-    if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -ne 0 ] && [ "$COMPOSER_MODE" = require ] && [ "$COMPOSER_DONE" = 1 ]; then
+        echo; echo "✗ The packages were updated, but the build stopped at: $STEP (exit $rc). composer.lock is kept — run Build Magento again ($(cmd_hint build))."
+    elif [ "$rc" -ne 0 ]; then
         echo; echo "✗ The build stopped at: $STEP (exit $rc). Maintenance mode is off again; the store runs the previous build where it could."
     elif [ "$(file_sha256 "$MAGENTO_DIR/composer.lock")" != "$LOCK_BEFORE" ]; then
         echo; echo "composer.lock changed — test the store, then commit it (dashboard → Git)."
@@ -74,9 +108,22 @@ if [ "$MAGENTO_MODE" = production ]; then
     UNLOCKED=1
 fi
 
-if [ -n "$COMPOSER_MODE" ]; then
+if [ "$COMPOSER_MODE" = require ]; then
+    # Only a complete copy counts: finish restores from SNAPSHOT.
+    snap="$(mktemp -d)"
+    cp "$MAGENTO_DIR/composer.json" "$MAGENTO_DIR/composer.lock" "$snap/" || { rm -rf "$snap"; fail "Couldn't copy composer.json and composer.lock aside — nothing was changed."; }
+    SNAPSHOT="$snap"
+    step "composer require ${PACKAGES[*]}"
+    "$PLATFORM_DIR/bin/composer" require --update-with-dependencies --no-interaction "${PACKAGES[@]}"
+    COMPOSER_DONE=1
+elif [ -n "$COMPOSER_MODE" ]; then
     step "composer $COMPOSER_MODE${PACKAGES[*]:+ ${PACKAGES[*]}}"
     "$PLATFORM_DIR/bin/composer" "$COMPOSER_MODE" --no-interaction "${PACKAGES[@]}"
+fi
+
+if [ -n "$MODULE_OP" ]; then
+    step "module:$MODULE_OP ${MODULES[*]}"
+    "$MAGENTO" "module:$MODULE_OP" --clear-static-content "${MODULES[@]}"
 fi
 
 step "maintenance:enable"
@@ -86,11 +133,13 @@ MAINT=1
 step "setup:upgrade"
 "$MAGENTO" setup:upgrade
 
-step "setup:di:compile"
-"$MAGENTO" setup:di:compile
+if [ "$QUICK" = 0 ]; then
+    step "setup:di:compile"
+    "$MAGENTO" setup:di:compile
 
-step "setup:static-content:deploy -f"
-"$MAGENTO" setup:static-content:deploy -f
+    step "setup:static-content:deploy -f"
+    "$MAGENTO" setup:static-content:deploy -f
+fi
 
 step "cache:flush"
 "$MAGENTO" cache:flush

@@ -88,6 +88,33 @@ async function run() {
   check('formDialog cancel skips validate', (await p) === false);
   check('no dialog left open', !document.querySelector('dialog[open]'));
 
+  // SearchInput: an <input type=search> after a search icon; icons exist.
+  const search = SearchInput({ 'aria-label': 'Search', placeholder: 'x' });
+  const sInput = search.querySelector('input');
+  check('SearchInput input', sInput && sInput.type === 'search' && sInput.getAttribute('aria-label') === 'Search');
+  check('SearchInput icon', search.querySelector('svg') && search.querySelector('svg').innerHTML.includes('circle'));
+  check('blocks icon', ICONS.blocks.includes('rect'));
+
+  // Pagination: 7 slots at most, gaps as null; clicks report the page.
+  check('paginationRange short', paginationRange(2, 3).join() === '1,2,3');
+  check('paginationRange start', paginationRange(1, 10).join() === '1,2,3,4,5,,10', paginationRange(1, 10).join());
+  check('paginationRange middle', paginationRange(5, 10).join() === '1,,4,5,6,,10', paginationRange(5, 10).join());
+  check('paginationRange end', paginationRange(10, 10).join() === '1,,6,7,8,9,10', paginationRange(10, 10).join());
+  let picked = null;
+  const pg = Pagination({ page: 5, pageCount: 10, onChange: (n) => { picked = n; } });
+  check('Pagination nav', pg.getAttribute('aria-label') === 'Pagination' && pg.querySelectorAll('[aria-hidden=true]').length >= 2);
+  pg.querySelector('button[aria-label="Go to next page"]').click();
+  check('Pagination next', picked === 6, picked);
+  pg.querySelector('[aria-current=page]').click();
+  check('Pagination current is a no-op', picked === 6, picked);
+
+  // Checkbox: the select-all "some selected" state.
+  const mixed = Checkbox({ indeterminate: true }).querySelector('input');
+  check('Checkbox indeterminate', mixed.indeterminate === true && !mixed.hasAttribute('aria-checked'));
+  check('Checkbox plain', Checkbox({ checked: true }).querySelector('input').indeterminate === false);
+  const bar = SelectionBar('3 selected', Button({ label: 'Go' }));
+  check('SelectionBar', bar.getAttribute('role') === 'toolbar' && bar.textContent.includes('3 selected') && bar.querySelector('button'));
+
   // userBusy: typing or an open dialog.
   const input = h('input'); document.body.append(input); input.focus();
   check('userBusy while typing', userBusy() === true);

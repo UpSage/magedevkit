@@ -67,7 +67,13 @@ const ICONS = {
   terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>',
   database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/>',
   box: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+  blocks: '<path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2"/><rect x="14" y="2" width="8" height="8" rx="1"/>',
+  search: '<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>',
   chevronDown: '<path d="m6 9 6 6 6-6"/>',
+  chevronLeft: '<path d="m15 18-6-6 6-6"/>',
+  minus: '<path d="M5 12h14"/>',
+  chevronRight: '<path d="m9 18 6-6-6-6"/>',
+  ellipsis: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
   wifiOff: '<path d="M12 20h.01"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/><path d="M5 12.859a10 10 0 0 1 5.17-2.69"/><path d="M19 12.859a10 10 0 0 0-2.007-1.523"/><path d="M2 8.82a15 15 0 0 1 4.177-2.643"/><path d="M22 8.82a15 15 0 0 0-11.288-3.764"/><path d="m2 2 20 20"/>',
   // dashboard
   arrowLeft: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
@@ -138,6 +144,40 @@ function Button({ variant = 'default', size = 'default', iconName, label, onClic
     }), kids);
   }
   return h('button', Object.assign(props, { type, disabled: !!disabled }), kids);
+}
+
+// shadcn Pagination: Previous, the page numbers (… for gaps), Next. page is
+// 1-based; onChange(page) gets the page clicked. The links are buttons
+// with the Button recipe — ghost, and outline for the current page.
+function Pagination({ page, pageCount, onChange, label = 'Pagination' }) {
+  const link = (p, kids, { active, disabled, aria, size } = {}) => h('button', {
+    type: 'button', class: cn(BUTTON_BASE, BUTTON_VARIANTS[active ? 'outline' : 'ghost'], size || BUTTON_SIZES.icon),
+    'aria-current': active ? 'page' : null, 'aria-label': aria, disabled: !!disabled,
+    onClick: () => { if (p !== page) onChange(p); },
+  }, kids);
+  return h('nav', { role: 'navigation', 'aria-label': label, class: 'mx-auto flex w-full justify-center' },
+    h('ul', { class: 'flex flex-row items-center gap-1' },
+      h('li', {}, link(page - 1, [icon('chevronLeft'), h('span', { class: 'hidden sm:block', text: 'Previous' })],
+        { disabled: page <= 1, aria: 'Go to previous page', size: 'h-9 gap-1 px-2.5 sm:pl-2.5' })),
+      paginationRange(page, pageCount).map((p) => h('li', {}, p == null
+        ? h('span', { class: 'flex size-9 items-center justify-center', 'aria-hidden': 'true' }, icon('ellipsis'))
+        : link(p, String(p), { active: p === page }))),
+      h('li', {}, link(page + 1, [h('span', { class: 'hidden sm:block', text: 'Next' }), icon('chevronRight')],
+        { disabled: page >= pageCount, aria: 'Go to next page', size: 'h-9 gap-1 px-2.5 sm:pr-2.5' }))));
+}
+
+// The pages Pagination shows: always 7 slots once there are more than 7
+// pages — first, last, the current one with its neighbours, null for a gap.
+function paginationRange(page, count) {
+  if (count <= 7) return Array.from({ length: count }, (_, i) => i + 1);
+  const start = Math.max(2, Math.min(page - 1, count - 4));
+  const end = Math.min(count - 1, Math.max(page + 1, 5));
+  const out = [1];
+  if (start > 2) out.push(null);
+  for (let p = start; p <= end; p += 1) out.push(p);
+  if (end < count - 1) out.push(null);
+  out.push(count);
+  return out;
 }
 
 // An inline text link (inside sentences, lists and tables).
@@ -339,6 +379,14 @@ function Input(props) {
   return h('input', Object.assign({ class: INPUT_CLASS, autocomplete: 'off', spellcheck: 'false' }, props));
 }
 
+// An Input with a leading search icon (list filters). props go to the
+// <input>; like Checkbox it returns the wrapper — use .querySelector('input').
+function SearchInput(props) {
+  return h('div', { class: 'relative w-full' },
+    icon('search', 'text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2'),
+    h('input', Object.assign({ class: cn(INPUT_CLASS, 'pl-8'), type: 'search', autocomplete: 'off', spellcheck: 'false' }, props)));
+}
+
 // shadcn Textarea — same tokens as Input.
 function Textarea(props) {
   return h('textarea', Object.assign({
@@ -363,14 +411,24 @@ function NativeSelect({ options, value, onChange, cls, ...rest }) {
     icon('chevronDown', 'pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 opacity-50'));
 }
 
-// Native checkbox styled like shadcn's Checkbox. props go to the <input>.
+// Native checkbox styled like shadcn's Checkbox. props go to the <input>;
+// indeterminate: true is the "some selected" state of a select-all box (a
+// dash; the browser reports the native property as "mixed" itself).
 function Checkbox(props) {
-  return h('span', { class: 'relative inline-flex size-4 shrink-0' },
-    h('input', Object.assign({
-      type: 'checkbox',
-      class: 'peer border-input dark:bg-input/30 checked:bg-primary checked:border-primary dark:checked:bg-primary focus-visible:border-ring focus-visible:ring-ring/50 size-4 shrink-0 cursor-pointer appearance-none border shadow-xs transition-shadow outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50',
-    }, props)),
-    icon('check', 'pointer-events-none absolute inset-0 m-auto hidden size-3.5 text-primary-foreground peer-checked:block'));
+  const input = h('input', Object.assign({
+    type: 'checkbox',
+    class: 'peer border-input dark:bg-input/30 checked:bg-primary checked:border-primary dark:checked:bg-primary indeterminate:bg-primary indeterminate:border-primary dark:indeterminate:bg-primary focus-visible:border-ring focus-visible:ring-ring/50 size-4 shrink-0 cursor-pointer appearance-none border shadow-xs transition-shadow outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50',
+  }, props));
+  return h('span', { class: 'relative inline-flex size-4 shrink-0' }, input,
+    icon('check', 'pointer-events-none absolute inset-0 m-auto hidden size-3.5 text-primary-foreground peer-checked:block'),
+    icon('minus', 'pointer-events-none absolute inset-0 m-auto hidden size-3.5 text-primary-foreground peer-indeterminate:block'));
+}
+
+// The strip above a table while rows are selected: "N selected" and the
+// bulk actions (Buttons). Sticks under the page header while scrolling.
+function SelectionBar(text, ...actions) {
+  return h('div', { class: 'bg-card sticky top-16 z-10 flex flex-wrap items-center gap-2 border-b py-2', role: 'toolbar', 'aria-label': 'Selected rows' },
+    h('span', { class: 'mr-auto text-sm font-medium', text }), actions);
 }
 
 // One option of a radio group, as a selectable card (shadcn RadioGroupItem
