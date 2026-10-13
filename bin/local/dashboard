@@ -48,20 +48,39 @@ except Exception: print("")' "$STATE" "$1"
 }
 
 # Already running? Trust the state file only if its pid is alive and the
-# server on its port answers with the same instance id.
+# server on its port answers with the same instance id. If that server runs
+# older code than this repo has now (MageDevKit was updated since it
+# started), it is restarted on the same port; operations it started are
+# detached and keep running.
 if [ -f "$STATE" ]; then
     OLD_PID="$(state_field pid)"
     OLD_PORT="$(state_field port)"
-    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null \
-        && [ "$(python3 - "$OLD_PORT" "$(state_field instance)" <<'PY'
-import json, sys, urllib.request
+    RUNNING=no
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        RUNNING="$(python3 - "$OLD_PORT" "$(state_field instance)" "$PLATFORM_DIR/bin/lib/web-wizard" <<'PY'
+import json, os, sys, urllib.request
 try:
     with urllib.request.urlopen("http://127.0.0.1:%s/api/ping" % sys.argv[1], timeout=2) as r:
-        print("yes" if json.load(r).get("instance") == sys.argv[2] else "no")
+        ping = json.load(r)
 except Exception:
     print("no")
+    sys.exit()
+if ping.get("instance") != sys.argv[2]:
+    print("no")
+    sys.exit()
+d = sys.argv[3]
+now = max(int(os.path.getmtime(os.path.join(d, n))) for n in os.listdir(d) if n.endswith(".py"))
+print("yes" if int(ping.get("code") or 0) >= now else "old")
 PY
-)" = yes ]; then
+)"
+    fi
+    if [ "$RUNNING" = old ]; then
+        log "The running dashboard (PID $OLD_PID) started before MageDevKit was updated — restarting it. Running operations keep going."
+        kill -TERM "$OLD_PID" 2>/dev/null || true
+        for _ in $(seq 1 50); do kill -0 "$OLD_PID" 2>/dev/null || break; sleep 0.1; done
+        kill -0 "$OLD_PID" 2>/dev/null && fail "The old dashboard (PID $OLD_PID) didn't stop — stop it with Ctrl+C in its terminal, then run this again."
+    fi
+    if [ "$RUNNING" = yes ]; then
         URL="$(state_field url)"
         printf '\n  The dashboard is already running (PID %s).\n\n  Open:  %s\n\n' "$OLD_PID" "$URL"
         [ "$OPEN_BROWSER" = 1 ] && open_browser "$URL"

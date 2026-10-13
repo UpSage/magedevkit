@@ -4,7 +4,9 @@
 # (bin/local/pipeline), `rebuild [install|update [packages…]]`
 # (bin/local/rebuild) or `ownership single|two-owner`
 # (bin/ownership/<model>; started by the dashboard, since it may need the sudo
-# password, which the wizard asks for on its page). Called by
+# password, which the wizard asks for on its page), or `account add|import|login
+# NAME` (bin/local/aws-account: MageDevKit's AWS connections — no instance).
+# Called by
 # bin/local/{setup,refresh,version,pipeline,rebuild}-wizard and the dashboard;
 # see bin/lib/web-wizard/server.py.
 #
@@ -13,7 +15,7 @@
 
 set -e
 
-FLOW="${1:?usage: launch.sh setup|refresh|version|pipeline|rebuild [install|update [packages…]]|ownership MODEL [--no-browser] [--port N]}"
+FLOW="${1:?usage: launch.sh setup|refresh|version|pipeline|rebuild [install|update [packages…]]|ownership MODEL|account add|import|login NAME [--no-browser] [--port N]}"
 shift
 MODEL=""
 if [ "$FLOW" = ownership ]; then
@@ -32,6 +34,20 @@ if [ "$FLOW" = rebuild ] && [[ "${1:-}" =~ ^(install|update)$ ]]; then
     done
 fi
 export REBUILD_COMPOSER REBUILD_PACKAGES
+# account add | import | login NAME — MageDevKit's own AWS connections. They
+# belong to no instance, so the wizard runs in this repo (logs/ here).
+ACCOUNT_ACTION=""
+ACCOUNT_NAME=""
+if [ "$FLOW" = account ]; then
+    ACCOUNT_ACTION="${1:-}"
+    shift || true
+    if [ "$ACCOUNT_ACTION" = login ]; then
+        ACCOUNT_NAME="${1:-}"
+        shift || true
+    fi
+    unset PLATFORM_INSTANCE_DIR
+fi
+export ACCOUNT_ACTION ACCOUNT_NAME
 PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/ui.sh"
@@ -75,7 +91,15 @@ case "$FLOW" in
         SCRIPT="$PLATFORM_DIR/bin/ownership/$MODEL"; TERMINAL_CMD="$(cmd_hint ownership "$MODEL")"
         require_env_file
         ;;
-    *) fail "Unknown flow '$FLOW' (expected setup, refresh, version, pipeline, rebuild or ownership)." ;;
+    account)
+        case "$ACCOUNT_ACTION" in
+            add|import) ;;
+            login) [[ "$ACCOUNT_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || fail "Usage: launch.sh account login NAME" ;;
+            *) fail "Usage: launch.sh account add|import|login NAME" ;;
+        esac
+        SCRIPT="$PLATFORM_DIR/bin/local/aws-account"; TERMINAL_CMD="mdk aws $ACCOUNT_ACTION${ACCOUNT_NAME:+ $ACCOUNT_NAME}"
+        ;;
+    *) fail "Unknown flow '$FLOW' (expected setup, refresh, version, pipeline, rebuild, ownership or account)." ;;
 esac
 
 command -v python3 >/dev/null 2>&1 \
@@ -114,15 +138,18 @@ case "$FLOW" in
     pipeline) TITLE="Pipeline wizard" ;;
     rebuild) TITLE="Magento rebuild" ;;
     ownership) TITLE="File ownership switch" ;;
+    account) TITLE="AWS connection wizard" ;;
     *) TITLE="Magento setup wizard" ;;
 esac
+STOPS="${FLOW/version/version switch}"
+[ "$FLOW" = account ] && STOPS="wizard"
 cat <<MSG
 
   $TITLE is running.
 
   Open:  $URL
 
-  Keep this terminal open until it finishes — closing it stops the ${FLOW/version/version switch}.
+  Keep this terminal open until it finishes — closing it stops the $STOPS.
   Refreshing or closing the browser tab is safe; reopen the link to continue.
   Ctrl+C twice stops it.
 

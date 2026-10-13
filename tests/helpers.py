@@ -176,10 +176,12 @@ class Dashboard:
         self.tmp = tempfile.mkdtemp(prefix="dash-test-")
         self.state = os.path.join(self.tmp, "state.json")
         self.token = "test-token-0123456789"
-        # Its own release cache, and no network for the background release
-        # check (releases.py) — the tests never touch ~/.cache or Adobe.
+        # Its own release cache and AWS connections, and no network for the
+        # background release check (releases.py) — the tests never touch
+        # ~/.cache, ~/.config/magedevkit or Adobe.
         env = dict(os.environ, DASHBOARD_TOKEN=self.token, PATH=path_dir + os.pathsep + os.environ["PATH"],
-                   XDG_CACHE_HOME=os.path.join(self.tmp, "cache"), HTTPS_PROXY="http://127.0.0.1:9",
+                   XDG_CACHE_HOME=os.path.join(self.tmp, "cache"), XDG_CONFIG_HOME=os.path.join(self.tmp, "config"),
+                   HTTPS_PROXY="http://127.0.0.1:9",
                    https_proxy="http://127.0.0.1:9", NO_PROXY="", no_proxy="")
         env.update(extra_env or {})
         self.proc = subprocess.Popen(

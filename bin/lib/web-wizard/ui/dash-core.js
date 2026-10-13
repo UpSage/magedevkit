@@ -1,6 +1,6 @@
-// MageDevKit dashboard, part 1 of 5: state, helpers, polling, actions and the
+// MageDevKit dashboard, part 1 of 6: state, helpers, polling, actions and the
 // page shell. Loaded in order by dashboard.html — dash-core.js, dash-env.js,
-// dash-git.js, dash-modules.js, dashboard.js (boot) — as plain scripts sharing one global
+// dash-git.js, dash-modules.js, dash-aws.js, dashboard.js (boot) — as plain scripts sharing one global
 // scope; kit.js (DOM helpers, icons, shadcn/ui recipes) comes first.
 
 // MageDevKit dashboard client — every checkout's status, actions and the
@@ -59,6 +59,8 @@ const S = {
   modulesFilter: modulesFilterDefault(),
   modulesPage: 1,
   modulesSel: new Set(),  // selected module names (all pages)
+  aws: null,          // GET /api/aws/accounts — MageDevKit's AWS connections
+  stopped: false,     // turned off from this page: nothing polls any more
 };
 
 const root = document.getElementById('app');
@@ -201,6 +203,7 @@ function errorText(res) {
 // ---------------------------------------------------------------------------
 
 function parseRoute() {
+  if (location.hash === '#/aws') return { view: 'aws' };
   const m = location.hash.match(/^#\/env\/([a-z0-9_-]+)(?:\/([a-z]+))?$/);
   if (m) return { view: 'env', id: m[1], tab: TABS.some((t) => t.id === m[2]) ? m[2] : 'overview' };
   return { view: 'overview' };
@@ -226,6 +229,7 @@ window.addEventListener('hashchange', () => {
 let pollTimer = null;
 async function refresh() {
   clearTimeout(pollTimer);
+  if (S.stopped) return;
   if (S.route.view === 'env') {
     const res = await getJSON(`/api/environments/${encodeURIComponent(S.route.id)}`);
     if (res.status === 403) return lost();
@@ -242,6 +246,12 @@ async function refresh() {
     if (S.route.tab === 'modules') await loadModules();
     // The sidebar lists every environment: refreshed every 30 s here.
     if (!S.overview || Date.now() - (S.overviewAt || 0) > 30000) {
+      const o = await getJSON('/api/environments');
+      if (o.ok) { S.overview = o.data; S.overviewAt = Date.now(); }
+    }
+  } else if (S.route.view === 'aws') {
+    await loadAws(false);
+    if (!S.overview) {
       const o = await getJSON('/api/environments');
       if (o.ok) { S.overview = o.data; S.overviewAt = Date.now(); }
     }
@@ -309,6 +319,7 @@ function adoptRunningOperation() {
 let watchTimer = null;
 async function watchOperation() {
   clearTimeout(watchTimer);
+  if (S.stopped) return;
   const w = S.watch;
   if (!w) return;
   const res = await getJSON(`/api/environments/${encodeURIComponent(w.envId)}/operations/${encodeURIComponent(w.opId)}/log?lines=400`);
@@ -519,7 +530,8 @@ function renderSidebar() {
   setKids(sidebarSlot,
     SidebarHeader({ title: 'MageDevKit', subtitle: 'Magento Developer Kit', href: '#/' }),
     SidebarGroup('Dashboard',
-      SidebarItem({ href: '#/', iconName: 'layoutGrid', label: 'All environments', active: S.route.view !== 'env' })),
+      SidebarItem({ href: '#/', iconName: 'layoutGrid', label: 'All environments', active: S.route.view === 'overview' }),
+      SidebarItem({ href: '#/aws', iconName: 'cloud', label: 'AWS accounts', active: S.route.view === 'aws' })),
     SidebarGroup('Environments', envs.map((e) => [
       SidebarItem({ href: `#/env/${e.id}`, lead: Dot(envLevel(e)), label: e.name, active: e.id === openId && S.route.tab === 'overview' }),
       e.id === openId ? TABS.filter((t) => t.id !== 'overview').map((t) => SidebarItem({
@@ -530,18 +542,64 @@ function renderSidebar() {
   setKids(footerSlot, PageFooter(S.overview && S.overview.platformVersion, { cls: 'md:hidden' }));
 }
 
+// Turn off: stops the dashboard server (POST /api/shutdown). Operations and
+// wizard pages it started run on their own and keep going.
+async function turnOff() {
+  const running = ((S.overview && S.overview.environments) || []).filter((e) => e.operation && e.operation.running).length;
+  const ok = await confirmDialog({
+    title: 'Turn off the dashboard?',
+    text: h('div', { class: 'space-y-2' },
+      h('p', { text: 'This stops the dashboard. Running operations and open wizard pages keep going.' }),
+      running ? h('p', { class: 'font-medium', text: `${running} operation${running === 1 ? ' is' : 's are'} running now — they carry on without it.` }) : null,
+      h('p', { text: 'Start it again with mdk dashboard.' })),
+    confirm: 'Turn off',
+  });
+  if (!ok) return;
+  const res = await busyApi('/api/shutdown', {});
+  if (res.status === 404) {
+    render();
+    return showError('This dashboard is older than its Turn off button', { status: 404, data: {
+      error: 'It was started before MageDevKit was updated. Run mdk dashboard — it restarts this one with the new code — or press Ctrl+C in its terminal.' } });
+  }
+  if (!res.ok) {
+    render();
+    return showError('The dashboard didn’t turn off', res);
+  }
+  S.stopped = true;
+  clearTimeout(pollTimer);
+  clearTimeout(watchTimer);
+  render();
+}
+
+function renderStopped() {
+  document.title = 'Dashboard off — MageDevKit';
+  setKids(headRight, ThemeToggle(render));
+  setKids(contentSlot, Card({},
+    CardHeader(CardTitle('The dashboard is off'),
+      CardDescription('Operations and wizard pages it started keep running. To open it again, run:')),
+    CardContent(CodeLine('mdk dashboard'))));
+}
+
 function render() {
   if (!root.firstChild) buildShell();
+  if (S.stopped) return renderStopped();
   setKids(headRight,
     S.busy ? Spinner('text-muted-foreground') : null,
     Button({ variant: 'ghost', size: 'icon', iconName: 'rotateCw', title: 'Refresh now', onClick: () => refresh() }),
-    ThemeToggle(render));
+    ThemeToggle(render),
+    Button({ variant: 'ghost', size: 'icon', iconName: 'power', title: 'Turn off the dashboard', disabled: S.busy, onClick: turnOff }));
   renderSidebar();
   if (S.route.view === 'env') renderEnvPage();
+  else if (S.route.view === 'aws') renderAwsAccounts();
   else renderOverview();
   restoreLogScroll();  // the logs were taken out and put back: scroll as the reader left them
 }
 
 function ErrorBanner() {
-  return S.error ? Alert({ variant: 'destructive', iconName: 'alert', title: 'Problem' }, h('p', { text: S.error })) : null;
+  if (S.error) return Alert({ variant: 'destructive', iconName: 'alert', title: 'Problem' }, h('p', { text: S.error }));
+  if (S.overview && S.overview.codeOutdated) {
+    return Alert({ variant: 'warning', iconName: 'alert', title: 'MageDevKit was updated' },
+      h('p', { text: 'This dashboard still runs the code it started with. Restart it to use the new version: run mdk dashboard (it restarts this one), or turn it off and start it again.' }));
+  }
+  return null;
 }

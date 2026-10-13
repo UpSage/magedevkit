@@ -15,6 +15,11 @@ import helpers
 LIB = os.path.join(helpers.REPO, "bin", "lib")
 
 
+def check(fn, value):
+    """Exit status of util.sh's FN on VALUE (passed as an argument, never parsed)."""
+    return subprocess.run(["bash", "-c", 'source "%s/util.sh"; %s "$1"' % (LIB, fn), "check", value]).returncode
+
+
 def bash(script, cwd):
     return subprocess.run(["bash", "-c", 'for f in ui env util db-backup; do source "%s/$f.sh"; done; %s' % (LIB, script)],
                           cwd=cwd, capture_output=True, text=True)
@@ -66,6 +71,20 @@ class BashHelpers(unittest.TestCase):
             self.assertEqual(bash('valid_hostname "%s"' % ok, self.d).returncode, 0, ok)
         for bad in ("localhost", "x;rm.test", "a..b", "-a.b", "a.b|c", "a b.test", ""):
             self.assertNotEqual(bash("valid_hostname '%s'" % bad, self.d).returncode, 0, bad)
+
+    def test_aws_names(self):
+        checks = {
+            "valid_aws_profile": (["acme", "acme-dev.2", "A_b"], ["", "a b", "../x", "a;b", "x" * 65]),
+            "valid_aws_region": (["us-east-2", "eu-central-1", "us-gov-west-1"], ["", "mars", "us-east", "US-EAST-1", "us-east-2;x"]),
+            "valid_account_id": (["485849269510"], ["", "48584926951", "4858492695100", "abcdefghijkl"]),
+            "valid_env_name": (["dev", "staging", "prod-eu"], ["", "d", "Dev", "1dev", "dev_x", "a" * 17]),
+            "valid_s3_uri": (["s3://my-dumps/2026/shop.sql.gz"], ["", "s3://b", "https://x/y", "s3://bucket/../etc", "s3://B/x", "s3://b/x y"]),
+        }
+        for fn, (good, bad) in checks.items():
+            for v in good:
+                self.assertEqual(check(fn, v), 0, (fn, v))
+            for v in bad:
+                self.assertNotEqual(check(fn, v), 0, (fn, v))
 
     def test_live_site_url_and_cookie_domain(self):
         self.assertEqual(bash("normalize_base_url https://example.com", self.d).stdout, "https://example.com/")
@@ -361,6 +380,60 @@ esac
         self.assertIn("AWS_PROFILE_DEFAULT=shop\n", env)
         envrc = helpers.read(os.path.join(self.d, ".envrc"))
         self.assertEqual(envrc, "export AWS_PROFILE=shop\nexport AWS_S3_PROFILE=shop\n")  # never keys
+
+    def run_choose(self, fake_aws, preset=None):
+        helpers.write(os.path.join(self.bin, "aws"), fake_aws, 0o755)
+        script = """
+            source "%(lib)s/ui.sh"; source "%(lib)s/env.sh"; source "%(lib)s/aws-storage.sh"
+            ENV_FILE=.env ENV_NAME=.env
+            prompt_aws_profile() { echo shop; }
+            prompt_s3_bucket() { echo media; }
+            s3_bucket_region() { echo eu-central-1; }
+            aws_configure_profile() { echo "configure called" >&2; }
+            s3_storage_choose "$PWD/.envrc" old
+            echo "chosen=$AWS_PROFILE"
+        """ % {"lib": LIB}
+        env = dict(os.environ, PATH=self.bin + os.pathsep + os.environ["PATH"], HOME=os.path.join(self.d, "home"))
+        if preset:
+            env["PRESET_S3_WIDE_PROFILE"] = preset
+        return subprocess.run(["bash", "-c", script], cwd=self.d, capture_output=True, text=True, env=env,
+                              stdin=subprocess.DEVNULL)
+
+    def test_admin_profile_needs_a_yes_and_it_is_remembered(self):
+        wide = """#!/bin/sh
+case "$*" in
+  "sts get-caller-identity --profile shop --query Arn"*) echo arn:aws:iam::485849269510:user/admin ;;
+  "sts get-caller-identity"*) exit 0 ;;
+  "iam simulate-principal-policy"*) printf 'iam:CreateUser\tec2:RunInstances\n' ;;
+  "configure get region"*) echo eu-west-1 ;;
+  "configure get aws_access_key_id"*) echo AKIAFAKEFAKEFAKE0000 ;;
+  "configure get aws_secret_access_key"*) echo fake-secret ;;
+  "s3api head-bucket"*) exit 0 ;;
+esac
+"""
+        p = self.run_choose(wide)
+        self.assertEqual(p.returncode, 130, p.stdout + p.stderr)  # nobody to say yes: cancelled
+        self.assertIn("may also do: iam:CreateUser ec2:RunInstances", p.stdout)
+        p = self.run_choose(wide, preset="Y")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("S3_WIDE_PROFILE_OK=shop\n", helpers.read(os.path.join(self.d, ".env")))
+        p = self.run_choose(wide)  # remembered: no question this time
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertNotIn("may also do", p.stdout)
+
+    def test_sso_profile_is_refused_for_media(self):
+        sso = """#!/bin/sh
+case "$*" in
+  "sts get-caller-identity"*) exit 0 ;;
+  "configure get region"*) echo eu-west-1 ;;
+  "configure get sso_session"*) echo corp ;;
+  "configure get aws_access_key_id"*|"configure get aws_secret_access_key"*) exit 1 ;;
+  "s3api head-bucket"*) exit 0 ;;
+esac
+"""
+        p = self.run_choose(sso)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("signs in with SSO or a role", p.stderr)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,8 @@ load_env
 source "$PLATFORM_DIR/bin/lib/m2-catalog.sh"
 # shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/terraform.sh"
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/aws.sh"
 
 KIT_SRC="$PLATFORM_DIR/pipeline/templates"
 KIT_VERSION="$(tr -d '[:space:]' < "$PLATFORM_DIR/pipeline/VERSION")"
@@ -92,13 +94,25 @@ pl_choose() {
     printf '%s' "$v"
 }
 
-# aws with the chosen profile, short timeout, no pager; empty output on error.
-# Skipped (fails at once) when the chosen profile isn't one of yours — the
-# CLI would otherwise spend its timeout looking for credentials.
+# aws as the chosen MageDevKit connection (bin/lib/aws.sh — never ~/.aws or
+# this store's own AWS settings), short timeout; empty output on error.
+# Skipped (fails at once) when no connection was chosen.
 aws_q() {
     command -v aws >/dev/null 2>&1 || return 1
-    printf '%s\n' "${PROFILES[@]}" | grep -qxF -- "$AWS_PROFILE_SEL" || return 1
-    AWS_PAGER="" timeout 25 aws --profile "$AWS_PROFILE_SEL" --region "$AWS_REGION_SEL" "$@" 2>/dev/null
+    [ -n "$CONNECTION_SEL" ] || return 1
+    MDK_AWS_TIMEOUT=25 mdk_aws "$CONNECTION_SEL" --region "$AWS_REGION_SEL" "$@" 2>/dev/null
+}
+
+# pl_target_field ENV KEY — a field of this environment's target in deploy/pipeline.json.
+pl_target_field() {
+    [ -f "$MANIFEST" ] || return 0
+    python3 -c 'import json, sys
+try:
+    t = json.load(open(sys.argv[1])).get("targets", {}).get(sys.argv[2], {})
+    v = t.get(sys.argv[3], "") if isinstance(t, dict) else ""
+    print(v if isinstance(v, str) else "")
+except (OSError, ValueError):
+    pass' "$MANIFEST" "$1" "$2"
 }
 
 
@@ -175,19 +189,45 @@ log "✓ Store ready: branch $CUR_BRANCH, config.php committed, no secrets in gi
 # ------------------------------------------------------------------
 
 ui_step pipeline 2
-ENV_SEL="$(pl_ask ENV 'Environment name (dev, staging, …)' dev '^[a-z][a-z0-9-]{1,15}$' 'lowercase letters, digits and -, 2–16 characters')"
+ENV_SEL="$(pl_ask ENV 'Environment name (dev, staging, …)' dev "$ENV_NAME_RE" 'lowercase letters, digits and -, 2–16 characters')"
 APP_DEF="$(printf '%s' "${APP_NAME:-store}" | tr '[:upper:]_' '[:lower:]-' | sed 's/[^a-z0-9-]//g')"
 APP="$(pl_ask APP 'Name for the AWS resources (ECR repos, pipeline, /opt/<name> on the box)' "$APP_DEF" '^[a-z][a-z0-9-]{1,23}$' 'lowercase letters, digits and -, 2–24 characters')"
 
-mapfile -t PROFILES < <(command -v aws >/dev/null 2>&1 && aws configure list-profiles 2>/dev/null || true)
-if [ "${#PROFILES[@]}" -gt 0 ]; then
-    AWS_PROFILE_SEL="$(pl_choose AWS_PROFILE 'AWS profile for this environment (used by the provision wizard and the dashboard)' "${AWS_PROFILE_DEFAULT:-default}" "${PROFILES[@]}")"
-else
-    AWS_PROFILE_SEL="$(pl_ask AWS_PROFILE 'AWS profile for this environment' "${AWS_PROFILE_DEFAULT:-default}" '^[A-Za-z0-9_.-]+$' 'a profile name from ~/.aws/config')"
+# The AWS account: reached through one of MageDevKit's own connections
+# (mdk aws), never ~/.aws or this store's S3 settings. The kit records the
+# account number only; which connection reaches it is this computer's choice
+# (~/.config/magedevkit/accounts.json), remembered for next time.
+PREV_ACCOUNT="$(pl_target_field "$ENV_SEL" account)"
+mapfile -t CONNECTIONS < <(command -v aws >/dev/null 2>&1 && mdk_aws_names 2>/dev/null || true)
+CONNECTION_SEL="${PRESET_PIPELINE_CONNECTION:-$(mdk_aws_for_account "$PREV_ACCOUNT")}"
+if [ -n "$CONNECTION_SEL" ] && ! printf '%s\n' "${CONNECTIONS[@]}" | grep -qxF -- "$CONNECTION_SEL"; then
+    log "⚠ There's no MageDevKit connection called '$CONNECTION_SEL' — see: mdk aws list"
+    CONNECTION_SEL=""
 fi
+if [ -z "${PRESET_PIPELINE_CONNECTION:-}" ] && [ "${#CONNECTIONS[@]}" -gt 0 ]; then
+    n=1
+    for i in "${!CONNECTIONS[@]}"; do [ "${CONNECTIONS[$i]}" = "$CONNECTION_SEL" ] && n=$((i + 1)); done
+    i="$(prompt_menu "Which of MageDevKit's AWS connections reaches the account for $ENV_SEL?" "$n" "${CONNECTIONS[@]}")"
+    [ "$i" -ge 1 ] && CONNECTION_SEL="${CONNECTIONS[$((i - 1))]}"
+fi
+[ "${#CONNECTIONS[@]}" -gt 0 ] || log "⚠ MageDevKit has no AWS connections yet (add one with: mdk aws add, or the dashboard's AWS accounts page) — answers are typed in instead of picked from AWS."
 AWS_REGION_SEL="$(pl_ask REGION 'AWS region' us-east-2 '^[a-z]{2}(-[a-z]+)+-[0-9]$' 'e.g. us-east-2')"
 ACCOUNT_ID="$(aws_q sts get-caller-identity --query Account --output text || true)"
-if [ -n "$ACCOUNT_ID" ]; then log "✓ AWS profile $AWS_PROFILE_SEL works (account $ACCOUNT_ID)"; else log "⚠ Couldn't use AWS profile $AWS_PROFILE_SEL right now — answers are typed in instead of picked from AWS. The provision wizard checks it again."; fi
+valid_account_id "$ACCOUNT_ID" || ACCOUNT_ID=""
+if [ -n "$ACCOUNT_ID" ]; then
+    log "✓ Connection $CONNECTION_SEL works (account $ACCOUNT_ID)"
+    if [ -n "$PREV_ACCOUNT" ] && [ "$PREV_ACCOUNT" != "$ACCOUNT_ID" ]; then
+        log "⚠ $ENV_SEL was set up in AWS account $PREV_ACCOUNT, but connection $CONNECTION_SEL reaches $ACCOUNT_ID."
+        [ "${PRESET_PIPELINE_ACCOUNT:-}" = "$ACCOUNT_ID" ] \
+            || prompt_yes_no "Move $ENV_SEL to account $ACCOUNT_ID? (Its resources in $PREV_ACCOUNT are not touched.)" N \
+            || cancel "Nothing was changed — choose the connection for account $PREV_ACCOUNT."
+    fi
+    mdk_aws_remember "$ACCOUNT_ID" "$CONNECTION_SEL"
+    set_env_var "$ENV_FILE" PIPELINE_ACCOUNT "$ACCOUNT_ID"
+else
+    [ -n "$CONNECTION_SEL" ] && log "⚠ Couldn't use connection $CONNECTION_SEL right now (see: mdk aws list) — answers are typed in instead of picked from AWS. The provision wizard checks it again."
+    ACCOUNT_ID="$(pl_ask ACCOUNT "AWS account number for $ENV_SEL (12 digits)" "$PREV_ACCOUNT" '^[0-9]{12}$' '12 digits, e.g. 123456789012')"
+fi
 
 mapfile -t ZONES < <(aws_q route53 list-hosted-zones --query 'HostedZones[?Config.PrivateZone==`false`].Name' --output text | tr '\t' '\n' | sed 's/\.$//' | grep . || true)
 if [ "${#ZONES[@]}" -gt 0 ]; then
@@ -202,7 +242,7 @@ INSTANCE_TYPE="$(pl_choose INSTANCE_TYPE 'EC2 instance size (the whole stack run
 OFF_HOURS="$(pl_choose OFF_HOURS 'Stop the box outside working hours (weekdays 07:00–20:00 in the store timezone)?' no \
     'no — keep it running' 'yes — stop evenings and weekends (about ¼ of the cost)')"
 BRANCH="$(pl_ask BRANCH 'Branch that deploys to this environment' development '^[A-Za-z0-9._/-]+$' 'a git branch name')"
-GITHUB_REPO="$(pl_ask GITHUB_REPO 'GitHub repository (owner/name)' "$GITHUB_REPO_DEF" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' 'owner/name, e.g. Allfasteners/allfasteners2.4.9')"
+GITHUB_REPO="$(pl_ask GITHUB_REPO 'GitHub repository (owner/name)' "$GITHUB_REPO_DEF" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' 'owner/name, e.g. acme/magento-store')"
 
 mapfile -t CONNS < <(aws_q codestar-connections list-connections --provider-type-filter GitHub \
     --query 'Connections[?ConnectionStatus==`AVAILABLE`].[ConnectionArn,ConnectionName]' --output text \
@@ -319,14 +359,14 @@ fi
 REMOVE_OLD=no
 if [ "${#OLD_PRESENT[@]}" -gt 0 ]; then
     log "The repo still has the old hand-made pipeline at its root: $(pl_summary "${OLD_PRESENT[@]}")"
-    if pl_preset REMOVE_OLD || ! ui_web; then REMOVE_OLD="$(pl_saved REMOVE_OLD yes)"
+    if pl_preset REMOVE_OLD || ! ui_interactive; then REMOVE_OLD="$(pl_saved REMOVE_OLD yes)"
     elif prompt_yes_no "Remove the old pipeline files ($(pl_summary "${OLD_PRESENT[@]}"))? The kit replaces them; git keeps their history." Y; then REMOVE_OLD=yes
     fi
 fi
 
 ui_review "Ready to write the pipeline kit" \
     "Environment" "$ENV_SEL — https://$DOMAIN/" \
-    "AWS" "$AWS_PROFILE_SEL, $AWS_REGION_SEL${ACCOUNT_ID:+ (account $ACCOUNT_ID)}" \
+    "AWS" "account $ACCOUNT_ID, $AWS_REGION_SEL${CONNECTION_SEL:+ (through connection $CONNECTION_SEL)}" \
     "Box" "$INSTANCE_TYPE, ${VOLUME_GB} GB$([ "$OFF_HOURS" = yes ] && printf ', stopped off-hours')" \
     "Deploys from" "$GITHUB_REPO @ $BRANCH" \
     "Magento" "${MAGENTO_VERSION} in $MODE_SEL mode, PHP ${PHP_VERSION}, MariaDB ${MARIADB_VERSION}" \
@@ -391,7 +431,7 @@ with open(path, "w") as fh:
     json.dump(out, fh, indent=2)
     fh.write("\n")
 ' "$MANIFEST" "$KIT_VERSION" "$ENV_SEL" "$(python3 -c 'import json,sys; print(json.dumps(dict(zip(sys.argv[1::2], sys.argv[2::2]))))' \
-    domain "$DOMAIN" region "$AWS_REGION_SEL" profile "$AWS_PROFILE_SEL" branch "$BRANCH" app "$APP" \
+    domain "$DOMAIN" region "$AWS_REGION_SEL" account "$ACCOUNT_ID" branch "$BRANCH" app "$APP" \
     instanceType "$INSTANCE_TYPE" mode "$MODE_SEL" repo "$GITHUB_REPO" stateBucket "$TF_STATE_BUCKET")"
 log "✓ deploy/pipeline.json updated"
 
@@ -486,6 +526,16 @@ fi
 ui_step pipeline 6
 "${GIT[@]}" add -- .platform/stack.env deploy
 CHANGES="$("${GIT[@]}" diff --cached --name-only -- .platform deploy "${OLD_CI_FILES[@]}" | wc -l)"
+# The store's repo never holds a credential: check every staged kit file.
+mapfile -t STAGED_KIT < <("${GIT[@]}" diff --cached --name-only --diff-filter=ACMR -- .platform deploy)
+if [ "${#STAGED_KIT[@]}" -gt 0 ]; then
+    if ! FOUND="$(cd "$MAGENTO_DIR" && python3 "$PLATFORM_DIR/bin/lib/secret-scan.py" "${STAGED_KIT[@]}")"; then
+        "${GIT[@]}" reset -q -- .platform deploy
+        fail "These files look like they hold credentials, so nothing was committed (the values aren't shown here):
+$FOUND
+Remove them (a store's secrets belong in SSM, written by the provision wizard), then run the wizard again."
+    fi
+fi
 COMMIT_BRANCH=""
 if [ "$CHANGES" = 0 ]; then
     log "Nothing changed — the kit in the repo is already current. No commit."

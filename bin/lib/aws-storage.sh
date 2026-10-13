@@ -73,8 +73,40 @@ s3_storage_choose() {
 
     AWS_KEY_ID="$(aws configure get aws_access_key_id --profile "$AWS_PROFILE" 2>/dev/null || true)"
     AWS_SECRET="$(aws configure get aws_secret_access_key --profile "$AWS_PROFILE" 2>/dev/null || true)"
-    [ -n "$AWS_KEY_ID" ] && [ -n "$AWS_SECRET" ] \
-        || fail "Could not read keys back from AWS profile '$AWS_PROFILE' — run 'aws configure --profile $AWS_PROFILE' and try again."
+    if [ -z "$AWS_KEY_ID" ] || [ -z "$AWS_SECRET" ]; then
+        if [ -n "$(aws configure get sso_session --profile "$AWS_PROFILE" 2>/dev/null)$(aws configure get sso_start_url --profile "$AWS_PROFILE" 2>/dev/null)$(aws configure get role_arn --profile "$AWS_PROFILE" 2>/dev/null)" ]; then
+            fail "AWS profile '$AWS_PROFILE' signs in with SSO or a role, so it has no long-term keys Magento could keep for S3 media. Use a profile with an access key — ideally a dedicated IAM user that may only use this bucket."
+        fi
+        fail "Could not read keys back from AWS profile '$AWS_PROFILE' — run 'aws configure --profile $AWS_PROFILE' and try again."
+    fi
+    s3_profile_scope_check "$AWS_PROFILE"
+}
+
+# s3_profile_scope_check PROFILE — warns when PROFILE may do far more than use
+# a bucket: its keys are copied into this store's .env and env.php, where
+# Magento and every module in it can read them. Asks IAM's policy simulator
+# about a few admin actions; when the profile may not run the simulator (or
+# isn't an IAM user), nothing is said. A yes is remembered per profile
+# (S3_WIDE_PROFILE_OK in the env file); a scripted run says yes with
+# PRESET_S3_WIDE_PROFILE=Y.
+s3_profile_scope_check() {
+    local arn wide
+    [ "$(env_get "$ENV_FILE" S3_WIDE_PROFILE_OK)" = "$1" ] && return 0
+    arn="$(aws sts get-caller-identity --profile "$1" --query Arn --output text 2>/dev/null)" || return 0
+    [[ "$arn" == arn:aws*:iam::*:user/* ]] || return 0
+    wide="$(timeout 20 aws iam simulate-principal-policy --profile "$1" --policy-source-arn "$arn" \
+        --action-names iam:CreateUser ec2:RunInstances cloudformation:CreateStack s3:DeleteBucket \
+        --query 'EvaluationResults[?EvalDecision==`allowed`].EvalActionName' --output text 2>/dev/null)" || return 0
+    wide="$(printf '%s' "$wide" | tr '\t\n' '  ' | sed 's/None//g; s/  */ /g; s/^ //; s/ $//')"
+    [ -n "$wide" ] || return 0
+    log "⚠ AWS profile '$1' may also do: $wide."
+    log "  Its keys are copied into this store's $ENV_NAME and env.php, where Magento and every module can read them."
+    log "  Safer: a dedicated IAM user that may only use the media bucket (s3:ListBucket, GetObject, PutObject, DeleteObject)."
+    if [ "${PRESET_S3_WIDE_PROFILE:-}" != Y ]; then
+        prompt_yes_no "Use profile '$1' for media anyway?" N \
+            || cancel "Choose a profile limited to the media bucket, or local file storage."
+    fi
+    set_env_var "$ENV_FILE" S3_WIDE_PROFILE_OK "$1"
 }
 
 # s3_storage_save DRIVER [BUCKET REGION KEY SECRET] — the REMOTE_STORAGE_*
@@ -85,4 +117,33 @@ s3_storage_save() {
     set_env_var "$ENV_FILE" REMOTE_STORAGE_REGION "${3:-}"
     set_env_var "$ENV_FILE" REMOTE_STORAGE_KEY "${4:-}"
     set_env_var "$ENV_FILE" REMOTE_STORAGE_SECRET "${5:-}"
+}
+
+# Magento's own config writer, run inside the php container by
+# remote_storage_apply: env.php's remote_storage from the environment.
+RS_APPLY_PHP='require "app/bootstrap.php";
+$om = \Magento\Framework\App\Bootstrap::create(BP, $_SERVER)->getObjectManager();
+$cfg = ["driver" => "aws-s3", "config" => ["bucket" => getenv("RS_APPLY_BUCKET"), "region" => getenv("RS_APPLY_REGION")]];
+if (getenv("RS_APPLY_KEY") !== "" && getenv("RS_APPLY_SECRET") !== "") {
+    $cfg["config"]["credentials"] = ["key" => getenv("RS_APPLY_KEY"), "secret" => getenv("RS_APPLY_SECRET")];
+}
+$om->get(\Magento\Framework\App\DeploymentConfig\Writer::class)->saveConfig(
+    [\Magento\Framework\Config\File\ConfigFilePool::APP_ENV => ["remote_storage" => $cfg]], true);
+echo "remote_storage: aws-s3, bucket ", $cfg["config"]["bucket"], ", region ", $cfg["config"]["region"], PHP_EOL;'
+
+# remote_storage_apply BUCKET REGION KEY SECRET — points Magento's media at
+# the S3 bucket (env.php remote_storage, the same thing
+# `setup:config:set --remote-storage-driver=aws-s3 …` writes). The key and
+# secret travel in the php container's environment (docker compose exec -e
+# NAME takes the value from here), never on a command line, where
+# `--remote-storage-secret=…` would show them in the process list.
+remote_storage_apply() {
+    if [ -z "${EXEC_USER:-}" ]; then
+        # shellcheck disable=SC1091
+        source "$PLATFORM_DIR/bin/lib/identity.sh"
+    fi
+    RS_APPLY_BUCKET="$1" RS_APPLY_REGION="$2" RS_APPLY_KEY="$3" RS_APPLY_SECRET="$4" \
+        "$PLATFORM_DIR/bin/platform" exec -T \
+        -e RS_APPLY_BUCKET -e RS_APPLY_REGION -e RS_APPLY_KEY -e RS_APPLY_SECRET \
+        --user "$EXEC_USER" php php -r "$RS_APPLY_PHP"
 }

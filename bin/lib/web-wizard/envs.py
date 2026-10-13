@@ -684,14 +684,17 @@ SCRUB_KEYS = {"UI_PLATFORM_DIR", "STACK_LOCAL_OVERRIDE", "UI_FLOW", "UI_LOG_FILE
               "MAGENTO_DIR", "PROJECT", "EXEC_USER", "PHP_UID", "PHP_GID",
               # bin/lib/paths.sh — recomputed by every script; set per run below
               "PLATFORM_INSTANCE_DIR", "PLATFORM_MODE", "INSTANCE_DIR", "ENV_NAME", "NGINX_CONF_DIR", "CERTS_DIR",
-              "NGINX_CONF", "LOGS_DIR", "DB_DIR", "LOCK_FILE", "PLATFORM_INSTANCES_ROOT"}
+              "NGINX_CONF", "LOGS_DIR", "DB_DIR", "LOCK_FILE", "PLATFORM_INSTANCES_ROOT",
+              # bin/lib/aws.sh — MageDevKit's AWS files are named per call, never inherited
+              "MDK_AWS_DIR"} | set(webcore.AWS_ENV_KEYS)  # and no AWS login exported in your shell
 
 
 def child_env(all_envs):
     """The dashboard's environment minus anything that could steer a
     checkout's scripts to the wrong stack: compose interpolation prefers the
     shell environment over --env-file, COMPOSE_PROJECT_NAME overrides the
-    project name, and an inherited WIZARD_LOCK_HELD would skip the lock."""
+    project name, an inherited WIZARD_LOCK_HELD would skip the lock, and an
+    AWS login exported in the shell could act on the wrong account."""
     keys = set(SCRUB_KEYS)
     for e in all_envs:
         keys.update(e.env.keys())

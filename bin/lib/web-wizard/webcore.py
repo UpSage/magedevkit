@@ -56,11 +56,19 @@ def pid_alive(pid, marker):
 # Launcher secrets: each server pops its own at start-up, and no child process
 # may ever inherit one (git hooks, composer plugins and scripts all run code).
 SECRET_ENV_KEYS = ("DASHBOARD_TOKEN", "WIZARD_TOKEN")
+# AWS logins exported in the shell that started the dashboard. No child gets
+# them: a store's scripts use their own .env settings, and MageDevKit's AWS
+# entry points name their connection explicitly (bin/lib/aws.sh), so a stray
+# key can never act on the wrong account.
+AWS_ENV_KEYS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN",
+                "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
+                "AWS_CREDENTIAL_EXPIRATION", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE")
 
 
 def base_env(**extra):
-    """os.environ as it is now (not at import) minus launcher secrets, plus extra."""
-    env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV_KEYS}
+    """os.environ as it is now (not at import) minus launcher secrets and AWS
+    logins, plus extra."""
+    env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV_KEYS and k not in AWS_ENV_KEYS}
     env.update(extra)
     return env
 
@@ -102,7 +110,10 @@ def redact_literal(line, secrets):
 SECRET_PATTERNS = [
     (re.compile(r"(?i)\b((?:db_|mysql_|root_|admin_|rabbitmq_default_)?(?:password|passwd|pwd|pass|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret)"
                 r"[\"']?\s*(?:=>|[:=])\s*[\"']?)([^\s\"',;]{3,})"), r"\1" + MASK),
-    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), MASK),
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), MASK),
+    (re.compile(r"(?i)\b(aws_\w*(?:secret|token|key)\w*[\"']?\s*[:=]\s*[\"']?)[^\s\"',;]{3,}"), r"\1" + MASK),
+    (re.compile(r"(?i)([\"']?(?:SecretAccessKey|SessionToken|AccessToken|RefreshToken|ClientSecret)[\"']?\s*[:=]\s*[\"']?)[^\s\"',;]{3,}"),
+     r"\1" + MASK),
     (re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1" + MASK),
     (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+@"), r"\1" + MASK + "@"),
     (re.compile(r"(?i)([?&](?:token|x-amz-signature|x-amz-credential|x-amz-security-token|signature|sig)=)[^&\s\"']+"), r"\1" + MASK),

@@ -428,6 +428,12 @@ UI_STEPS_rebuild=(
     "Rebuild"
     "Done"
 )
+UI_STEPS_account=(
+    "Sign-in method"
+    "Details"
+    "Check"
+    "Done"
+)
 UI_STEPS_pipeline=(
     "Store check"
     "Target"
@@ -660,8 +666,20 @@ aws_configure_profile() {
     secret="$(ui_ask password "AWS secret access key for profile '$profile' (typing is hidden) [Enter = keep the current one]" '')"
     region="$(ui_ask text "Default AWS region (e.g. us-east-1)" "$(aws configure get region --profile "$profile" 2>/dev/null || true)")"
     output="$(ui_ask text "Default output format" "$(aws configure get output --profile "$profile" 2>/dev/null || echo json)")"
-    [ -n "$key" ] && aws configure set aws_access_key_id "$key" --profile "$profile"
-    [ -n "$secret" ] && aws configure set aws_secret_access_key "$secret" --profile "$profile"
+    # The keys go in with `aws configure import` from a private temp file:
+    # `aws configure set aws_secret_access_key …` would put the secret on a
+    # command line, where the process list shows it.
+    [ -n "$secret" ] || secret="$(aws configure get aws_secret_access_key --profile "$profile" 2>/dev/null || true)"
+    if [ -n "$key" ] && [ -n "$secret" ]; then
+        [[ "$profile" =~ ^[A-Za-z0-9._-]+$ ]] || fail "'$profile' isn't a profile name (letters, digits, . _ -)."
+        local csv
+        csv="$(mktemp)"
+        chmod 600 "$csv"
+        printf 'User Name,Access key ID,Secret access key\n%s,%s,%s\n' "$profile" "$key" "$secret" > "$csv"
+        aws configure import --csv "file://$csv" >/dev/null || { rm -f "$csv"; fail "The AWS CLI couldn't save the keys for profile '$profile'."; }
+        rm -f "$csv"
+    fi
+    unset secret
     [ -n "$region" ] && aws configure set region "$region" --profile "$profile"
     [ -n "$output" ] && aws configure set output "$output" --profile "$profile"
     return 0

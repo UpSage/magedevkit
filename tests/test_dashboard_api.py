@@ -389,3 +389,34 @@ class DashboardApi(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TurnOff(unittest.TestCase):
+    """POST /api/shutdown — the page's Turn off button."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="dash-off-")
+        self.fakebin = helpers.fake_docker_dir(self.root, [])
+        self.dash = helpers.Dashboard(self.root, self.root, self.fakebin)
+
+    def tearDown(self):
+        if self.dash.proc.poll() is None:
+            self.dash.stop()
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_ping_and_overview_tell_the_code_version(self):
+        code, ping, _ = self.dash.request("GET", "/api/ping", cookie=False)
+        self.assertEqual(code, 200)
+        self.assertGreater(ping["code"], 0)  # bin/local/dashboard restarts a server older than the files
+        self.assertIs(self.dash.request("GET", "/api/environments")[1]["codeOutdated"], False)
+
+    def test_needs_the_page_and_then_stops(self):
+        self.assertEqual(self.dash.request("POST", "/api/shutdown", headers={"X-Wizard": None})[0], 403)
+        self.assertEqual(self.dash.request("POST", "/api/shutdown", cookie=False)[0], 403)
+        self.assertEqual(self.dash.request("POST", "/api/shutdown", host="evil.example:%d" % self.dash.port)[0], 403)
+        self.assertIsNone(self.dash.proc.poll())  # still running
+        code, body, _ = self.dash.request("POST", "/api/shutdown")
+        self.assertEqual((code, body), (200, {"ok": True}))
+        self.dash.proc.wait(timeout=10)
+        self.assertEqual(self.dash.proc.returncode, 0)
+        self.assertTrue(os.path.exists(self.dash.state))  # kept: the next start reuses its port

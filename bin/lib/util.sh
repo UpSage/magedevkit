@@ -71,6 +71,31 @@ valid_instance_name() {
     [[ "$1" =~ $INSTANCE_NAME_RE ]]
 }
 
+# AWS names users type, checked before they reach a file, a command line or
+# an AWS call. bin/lib/aws-credentials.py and the dashboard use the same rules.
+#   valid_aws_profile    a MageDevKit connection name (letters, digits, . _ -)
+#   valid_aws_region     us-east-2, eu-central-1, ap-southeast-3, …
+#   valid_account_id     the 12-digit AWS account number
+#   valid_env_name       a deploy environment (dev, staging, prod-eu, …) — the
+#                        pipeline wizard's rule, 2–16 characters
+#   valid_s3_uri         s3://bucket/key — the only dump source an AWS refresh takes
+ENV_NAME_RE='^[a-z][a-z0-9-]{1,15}$'
+valid_aws_profile() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]]
+}
+valid_aws_region() {
+    [[ "$1" =~ ^[a-z]{2}(-gov|-iso[a-z]*)?-[a-z]+-[0-9]$ ]]
+}
+valid_account_id() {
+    [[ "$1" =~ ^[0-9]{12}$ ]]
+}
+valid_env_name() {
+    [[ "$1" =~ $ENV_NAME_RE ]]
+}
+valid_s3_uri() {
+    [[ "$1" =~ ^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/[A-Za-z0-9!_.*\'\(\)/-]+$ ]] && [[ "$1" != *..* ]]
+}
+
 # project_owner NAME [THIS_DIR] — the folder of the stack already using the
 # compose project NAME-platform, unless it is THIS_DIR (blank: nobody).
 # platform.instance_dir names the instance folder; stacks started before

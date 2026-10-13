@@ -37,6 +37,7 @@ import urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
+import awsaccounts  # noqa: E402
 import envs  # noqa: E402
 import ops  # noqa: E402
 import gitrepo  # noqa: E402
@@ -55,10 +56,23 @@ STATIC = {
     "/dash-env.js": ("dash-env.js", "text/javascript; charset=utf-8"),
     "/dash-git.js": ("dash-git.js", "text/javascript; charset=utf-8"),
     "/dash-modules.js": ("dash-modules.js", "text/javascript; charset=utf-8"),
+    "/dash-aws.js": ("dash-aws.js", "text/javascript; charset=utf-8"),
     "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
     "/theme.js": ("theme.js", "text/javascript; charset=utf-8"),
     "/wizard.css": ("wizard.css", "text/css; charset=utf-8"),
 }
+def code_stamp():
+    """When the dashboard's own code last changed: the newest mtime of its
+    Python files. Taken once at start (STARTED_CODE); a newer value later means
+    this process still runs the old code — bin/local/dashboard restarts it, and
+    the page asks for a restart."""
+    try:
+        return max(int(os.path.getmtime(os.path.join(HERE, n))) for n in os.listdir(HERE) if n.endswith(".py"))
+    except (OSError, ValueError):
+        return 0
+
+
+STARTED_CODE = code_stamp()
 ENV_ROUTE = re.compile(r"^/api/environments/([^/]+)(?:/(.*))?$")
 RELEASES_CATALOG = os.path.join(CODE_DIR, "m2")
 LOG = logging.getLogger("dashboard")
@@ -74,6 +88,11 @@ class Dashboard:
         self.disk = {}       # env id -> {"status", "at", "data"}
         self.disk_lock = threading.Lock()
         self.releases_lock = threading.Lock()  # one release check at a time
+        self.aws = awsaccounts.Accounts(CODE_DIR)
+        self.stop = None  # set by main(): stops the server (the Turn off button)
+
+    def all_envs(self):
+        return list(self.environments()[0].values())
 
     def environments(self):
         return self.discovery.environments()
@@ -106,7 +125,8 @@ class Dashboard:
         return {"environments": items, "edge": envs.edge_status(projects), "warnings": warnings,
                 "docker": {"available": derr is None, "error": derr}, "roots": self.discovery.roots,
                 "instancesRoot": self.instances_root(), "generatedAt": time.time(),
-                "platformVersion": webcore.platform_version(CODE_DIR)}
+                "platformVersion": webcore.platform_version(CODE_DIR),
+                "codeOutdated": code_stamp() > STARTED_CODE}
 
     # -- Magento releases (releases.py) ------------------------------------------
     # The page only ever reads the saved copy; the download runs in the
@@ -281,7 +301,7 @@ def make_handler(dash, port):
             if url.path == "/api/ping":
                 if not self.host_ok():
                     return self.send(403, {"error": "Forbidden host."})
-                return self.send(200, {"app": "platform-dashboard", "instance": dash.instance})
+                return self.send(200, {"app": "platform-dashboard", "instance": dash.instance, "code": STARTED_CODE})
             if self.login_or_static(url):
                 return
             if not self.guard():
@@ -294,6 +314,8 @@ def make_handler(dash, port):
                 return self.send(200, dash.overview())
             if url.path == "/api/releases":
                 return self.send(200, dash.releases_status())
+            if url.path == "/api/aws/accounts":
+                return self.send(200, dash.aws.status(dash.all_envs(), recheck=qs.get("check", ["0"])[0] == "1"))
             if url.path.startswith("/api/destroyed/"):
                 return self.send(200, ops.destroy_status(dash.destroy_dir, url.path[len("/api/destroyed/"):]))
             m = ENV_ROUTE.match(url.path)
@@ -342,6 +364,12 @@ def make_handler(dash, port):
             self.safely(lambda: self.post_api(url, body))
 
         def post_api(self, url, body):
+            if url.path == "/api/shutdown":
+                # Reply first, then stop: operations and wizard pages it
+                # started run detached and carry on.
+                LOG.info("dashboard stopped from the page")
+                threading.Timer(0.3, dash.stop).start()
+                return self.send(200, {"ok": True})
             if url.path == "/api/releases/refresh":
                 res = dash.refresh_releases()
                 LOG.info("release check: %s", res.get("lastError") or "ok")
@@ -350,6 +378,14 @@ def make_handler(dash, port):
                 res = dash.new_instance(body.get("name"))
                 LOG.info("new instance %s → %s", res["id"], res["operation"])
                 return self.send(202, res)
+            if url.path == "/api/aws/accounts/wizard":
+                op_id, link = dash.aws.start(body.get("action"), body.get("name"), dash.all_envs())
+                LOG.info("aws connection wizard %s → %s", body.get("action"), op_id)
+                return self.send(202, {"ok": True, "operation": op_id, "url": link})
+            if url.path == "/api/aws/accounts/remove":
+                res = dash.aws.remove(body.get("name"), dash.all_envs())
+                LOG.info("aws connection removed: %s", body.get("name"))
+                return self.send(200, res)
             m = ENV_ROUTE.match(url.path)
             if not m:
                 return self.send(404, {"error": "Not found."})
@@ -444,6 +480,8 @@ def main():
 
     def stop(*_):
         threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+    dash.stop = stop
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)

@@ -16,6 +16,7 @@ const FLOW_TEXT = {
   version: { name: 'Magento version', verb: 'Version switch', rerun: 'bin/local/version-wizard' },
   ownership: { name: 'File ownership', verb: 'Ownership switch', rerun: 'mdk ownership single|two-owner' },
   rebuild: { name: 'Magento rebuild', verb: 'Rebuild', rerun: 'mdk rebuild-wizard' },
+  account: { name: 'AWS connection', verb: 'AWS connection', rerun: 'mdk aws add' },
   pipeline: {
     name: 'Pipeline', verb: 'Pipeline kit', rerun: 'mdk pipeline-wizard',
     review: 'Check everything below. Nothing is written until you continue; the kit goes into magento/deploy/ and is committed on a new local branch — nothing is pushed.',
@@ -29,6 +30,7 @@ const DONE_TEXT = {
   version: { title: 'Magento version switched', text: 'The new version is installed, the database is upgraded and the code is rebuilt. A snapshot of the previous version is kept for rolling back.', details: 'Details' },
   ownership: { title: 'File ownership switched', text: 'The writable folders have the new owner and php-fpm runs as the new user.', details: 'Details' },
   rebuild: { title: 'Magento is rebuilt', text: 'setup:upgrade, the DI compile and static content are done, the indexes are fresh and the caches flushed.', details: 'Details' },
+  account: { title: 'AWS connection ready', text: 'MageDevKit can use this AWS account now. Its login is kept in MageDevKit\'s own files (~/.config/magedevkit/aws), apart from ~/.aws and from your stores.', details: 'Connection' },
   pipeline: { title: 'The store is pipeline-ready', text: 'The pipeline kit is in magento/deploy/ and committed on a local branch. Push it with the store; the AWS side comes from the provision wizard (coming in a later version).', details: 'Pipeline kit', commands: 'Next steps' },
 };
 

@@ -628,6 +628,9 @@ mdk dashboard --port 8800     # fixed port (default: the one it used last time)
 mdk dashboard --scan ~/Sites --scan /srv/stores   # extra folders to look for instances in
 ```
 
+To stop it, use the **Turn off** button (the power icon at the top of the page) or press Ctrl+C in
+its terminal. Running operations and open wizard pages keep going either way.
+
 One persistent page for **every instance on this machine**, laid out like
 the Magento admin: a dark sidebar lists the environments and, for the open one, its sections (on a
 narrow screen the sections become tabs). The wizard pages use the same layout, with their steps in

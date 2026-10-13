@@ -19,7 +19,7 @@ PINS = ("PHP_VERSION=8.4\nMARIADB_VERSION=12.3\nOPENSEARCH_VERSION=3\nVALKEY_VER
         "VARNISH_VERSION=8\nNGINX_VERSION=1.30\nCOMPOSER_VERSION=2.10\nDEBIAN_RELEASE=trixie\nMAGENTO_VERSION=2.4.9\n")
 
 PRESETS = {
-    "PRESET_PIPELINE_ENV": "dev", "PRESET_PIPELINE_APP": "shop", "PRESET_PIPELINE_AWS_PROFILE": "test",
+    "PRESET_PIPELINE_ENV": "dev", "PRESET_PIPELINE_APP": "shop", "PRESET_PIPELINE_ACCOUNT": "123456789012",
     "PRESET_PIPELINE_REGION": "us-east-2", "PRESET_PIPELINE_ZONE": "shop.test",
     "PRESET_PIPELINE_DOMAIN": "dev.shop.test", "PRESET_PIPELINE_INSTANCE_TYPE": "t3.large",
     "PRESET_PIPELINE_OFF_HOURS": "no", "PRESET_PIPELINE_BRANCH": "development",
@@ -57,6 +57,7 @@ class PipelineWizard(unittest.TestCase):
         git(self.mdir, "add", "-A")
         git(self.mdir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "store")
         self.env = dict(os.environ, PLATFORM_INSTANCE_DIR=self.inst, PIPELINE_SKIP_TERRAFORM="1",
+                        XDG_CONFIG_HOME=os.path.join(self.tmp, "config"),  # no MageDevKit AWS connections
                         AWS_CONFIG_FILE=os.path.join(self.tmp, "none"),
                         AWS_SHARED_CREDENTIALS_FILE=os.path.join(self.tmp, "none"),
                         GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
@@ -87,6 +88,9 @@ class PipelineWizard(unittest.TestCase):
                     "deploy/infra/envs/dev/terraform.tfvars", "deploy/targets/dev.env", ".platform/stack.env"):
             self.assertTrue(os.path.isfile(os.path.join(d, rel)), rel)
         self.assertTrue(os.access(os.path.join(d, "deploy/scripts/box"), os.X_OK))
+        target = helpers.read_json(os.path.join(d, "deploy/pipeline.json"))["targets"]["dev"]
+        self.assertEqual(target["account"], "123456789012")  # the account, never a local profile name
+        self.assertNotIn("profile", target)
         with open(os.path.join(d, "deploy/targets/dev.env")) as f:
             target = f.read()
         self.assertIn("APP_DOMAIN=dev.shop.test", target)
@@ -172,3 +176,39 @@ class PipelineWizard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SecretScan(unittest.TestCase):
+    """bin/lib/secret-scan.py — the check before the pipeline wizard commits."""
+
+    SCAN = os.path.join(helpers.REPO, "bin", "lib", "secret-scan.py")
+
+    def scan(self, *paths):
+        return subprocess.run(["python3", self.SCAN] + list(paths), capture_output=True, text=True)
+
+    def test_flags_credentials_without_printing_them(self):
+        d = tempfile.mkdtemp(prefix="scan-")
+        try:
+            bad = {
+                "a.env": "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n",
+                "b.ini": "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+                "c.pem": "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n",
+                "d.php": "'crypt' => ['key' => 'a3f5c0e1b2d4f6a8c0e2b4d6f8a0c2e4'],\n",
+                "e.json": '{"http-basic": {"repo.magento.com": {"username": "0123456789abcdef0123456789abcdef"}}}\n',
+                "f.sh": "TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n",
+            }
+            for name, text in bad.items():
+                helpers.write(os.path.join(d, name), text)
+                p = self.scan(os.path.join(d, name))
+                self.assertEqual(p.returncode, 1, name)
+                self.assertIn(name + ":", p.stdout)
+                for secret in ("AKIAABCDEFGHIJKLMNOP", "wJalrXUtnFEMI", "a3f5c0e1b2d4", "0123456789abcdef", "ghp_abc"):
+                    self.assertNotIn(secret, p.stdout)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_kit_templates_are_clean(self):
+        files = subprocess.run(["git", "-C", helpers.REPO, "ls-files", "pipeline/templates"], capture_output=True,
+                               text=True, check=True).stdout.split()
+        p = self.scan(*[os.path.join(helpers.REPO, f) for f in files])
+        self.assertEqual(p.returncode, 0, p.stdout)

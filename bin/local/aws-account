@@ -1,0 +1,331 @@
+#!/bin/bash
+
+set -e
+set -o pipefail
+
+# MageDevKit's AWS connections are not an instance's: never act for one.
+unset PLATFORM_INSTANCE_DIR
+
+# PLATFORM_DIR, MAGENTO and the shared helpers (ui.sh, env.sh, paths.sh).
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/aws.sh"
+
+# MageDevKit's AWS connections: the logins it uses to create and control AWS
+# environments. They live in ~/.config/magedevkit/aws, apart from ~/.aws and
+# from any store's own AWS keys (see bin/lib/aws.sh).
+#
+#   mdk aws list              every connection: account, type, region, status
+#   mdk aws add               connect an account: access keys, SSO or a role
+#   mdk aws login NAME        sign in to an SSO connection again
+#   mdk aws test NAME         check one connection
+#   mdk aws import            copy one profile from ~/.aws (you pick it)
+#   mdk aws remove NAME       forget a connection (asks first; --yes to skip)
+#
+# The browser version is bin/local/aws-account-wizard (also on the dashboard's
+# AWS accounts page). Secrets are typed into a hidden prompt, passed to
+# bin/lib/aws-credentials.py on stdin — never on a command line — and never
+# printed or logged.
+
+CREDS="$PLATFORM_DIR/bin/lib/aws-credentials.py"
+PROFILES_PY="$PLATFORM_DIR/bin/lib/aws-profiles.py"
+REGIONS=(us-east-1 us-east-2 us-west-1 us-west-2 ca-central-1 eu-west-1 eu-west-2 eu-central-1 eu-north-1
+         ap-southeast-1 ap-southeast-2 ap-northeast-1 ap-south-1 sa-east-1)
+
+# The action and its argument: from the command line, or from the wizard
+# launcher (bin/lib/web-wizard/launch.sh account ACTION [NAME]).
+ACTION="${1:-${ACCOUNT_ACTION:-}}"
+NAME_ARG="${2:-${ACCOUNT_NAME:-}}"
+YES=""
+[ "${3:-}" = --yes ] || [ "${2:-}" = --yes ] && YES=1
+[ "$NAME_ARG" = --yes ] && NAME_ARG=""
+
+case "$ACTION" in
+    -h|--help|help|"") script_help "$0"; exit 0 ;;
+    list|add|login|test|import|remove) ;;
+    *) fail "Unknown action '$ACTION' — see: mdk aws help" ;;
+esac
+case "$ACTION" in
+    login|test|remove)
+        [ -n "$NAME_ARG" ] || fail "Usage: mdk aws $ACTION NAME"
+        valid_aws_profile "$NAME_ARG" || fail "'$NAME_ARG' isn't a connection name (letters, digits, . _ -)."
+        ;;
+esac
+
+ensure_aws_cli
+command -v python3 >/dev/null 2>&1 || fail "python3 is needed for MageDevKit's AWS connections (sudo apt install python3)."
+
+# creds ARGS… [< json] — the credentials helper; its one-line error becomes a fail.
+creds() {
+    local out err
+    err="$(mktemp)"
+    if out="$(python3 "$CREDS" "$@" 2>"$err")"; then
+        rm -f "$err"
+        printf '%s' "$out"
+        return 0
+    fi
+    out="$(cat "$err")"
+    rm -f "$err"
+    [ -n "$out" ] || out="The AWS connection files could not be changed."
+    fail "$out"
+}
+
+# json_field JSON KEY — one top-level string field.
+json_field() {
+    python3 -c 'import json, sys; v = json.loads(sys.argv[1]).get(sys.argv[2], ""); print(v if isinstance(v, str) else "")' "$1" "$2"
+}
+
+# The status table (terminal), or one connection's result lines.
+show_status() {
+    local json
+    json="$(python3 "$PROFILES_PY" "$@")" || fail "Couldn't check the connections."
+    python3 - "$json" <<'PY'
+import json, sys
+rows = json.loads(sys.argv[1])
+if not rows:
+    print("No MageDevKit AWS connections yet — add one with: mdk aws add (or: mdk aws import)")
+    sys.exit(0)
+words = {"ok": "works", "sso-expired": "SSO sign-in expired — mdk aws login NAME", "bad-keys": "keys rejected",
+         "denied": "access denied", "unreachable": "AWS not reachable", "error": "error"}
+print("%-22s %-14s %-24s %-6s %-14s %s" % ("NAME", "ACCOUNT", "ALIAS", "TYPE", "REGION", "STATUS"))
+for r in rows:
+    status = words.get(r["status"], r["status"]).replace("NAME", r["name"])
+    if r["status"] not in ("ok", "sso-expired") and r.get("error"):
+        status += " (%s)" % r["error"]
+    print("%-22s %-14s %-24s %-6s %-14s %s" % (r["name"], r["account"] or "-", r["alias"] or "-", r["type"],
+                                              r["region"] or "-", status))
+PY
+}
+
+# check_one NAME — tests NAME; prints "ACCOUNT ALIAS" when it works, fails otherwise.
+check_one() {
+    local json status account alias err
+    json="$(python3 "$PROFILES_PY" "$1")" || fail "Couldn't check '$1'."
+    read -r status account alias < <(python3 -c 'import json, sys; r = json.loads(sys.argv[1])[0]; print(r["status"], r["account"] or "-", r["alias"] or "-")' "$json")
+    if [ "$status" != ok ]; then
+        err="$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])[0]["error"])' "$json")"
+        fail "Connection '$1' doesn't work yet ($status${err:+: $err})."
+    fi
+    log "✓ Connection '$1' works — AWS account $account${alias:+ ($alias)}"
+    ui_result text "Connection" "$1"
+    ui_result text "AWS account" "$account$([ "$alias" != - ] && printf ' (%s)' "$alias")"
+}
+
+ask_name() {
+    local v def="$1"
+    while true; do
+        v="$(prompt_value "$(with_default 'Name for this connection (letters, digits, . _ -)' "$def")" 0)"
+        v="${v:-$def}"
+        if valid_aws_profile "$v"; then
+            if mdk_aws_has "$v"; then
+                prompt_yes_no "MageDevKit already has a connection called '$v'. Replace it?" N || { ui_interactive || fail "'$v' exists."; continue; }
+            fi
+            printf '%s' "$v"
+            return
+        fi
+        ui_interactive || fail "No valid connection name given."
+        log "⚠ '$v' isn't a valid name." >&2
+    done
+}
+
+ask_region() {
+    local q="$1" def="${2:-us-east-1}" opts=() i n=1 v
+    for i in "${!REGIONS[@]}"; do
+        opts+=("${REGIONS[$i]}")
+        [ "${REGIONS[$i]}" = "$def" ] && n=$((i + 1))
+    done
+    i="$(prompt_menu "$q" "$n" "${opts[@]}" "Another region — type it")"
+    if [ "$i" -le "${#REGIONS[@]}" ]; then
+        printf '%s' "${REGIONS[$((i - 1))]}"
+        return
+    fi
+    while true; do
+        v="$(prompt_value 'Region (e.g. me-central-1)' 0)"
+        valid_aws_region "$v" && { printf '%s' "$v"; return; }
+        ui_interactive || fail "No valid region given."
+        log "⚠ '$v' isn't an AWS region." >&2
+    done
+}
+
+# ask_valid LABEL HIDDEN REGEX HINT — a value that matches REGEX.
+ask_valid() {
+    local v
+    while true; do
+        v="$(prompt_value "$1" "$2")"
+        [[ "$v" =~ $3 ]] && { printf '%s' "$v"; return; }
+        ui_interactive || fail "$1: no valid value given ($4)."
+        log "⚠ That isn't valid: $4" >&2
+    done
+}
+
+# set_connection NAME JSON — writes one connection (JSON on stdin of the helper).
+set_connection() {
+    local name="$1" json="$2" out
+    out="$(printf '%s' "$json" | creds set "$name")"
+    log "Saved connection '$name' in MageDevKit's AWS files ($(json_field "$out" type))."
+}
+
+# sso_login NAME — `aws sso login` with a device code: the link and code are
+# shown to you (on the page, or on this terminal) but never written to the log.
+sso_login() {
+    local name="$1" kind out pid url code i
+    kind="$(python3 -c 'import json, sys; print(next((c["type"] for c in json.loads(sys.argv[1]) if c["name"] == sys.argv[2]), ""))' "$(creds list)" "$name")"
+    [ "$kind" = sso ] || fail "'$name' isn't an SSO connection — only SSO connections sign in again."
+    out="$(mktemp)"
+    chmod 600 "$out"
+    mdk_aws "$name" sso login --sso-session "$name" --use-device-code --no-browser >"$out" 2>&1 &
+    pid=$!
+    for i in $(seq 1 60); do
+        url="$(grep -oE 'https://[^ ]+' "$out" | head -1 || true)"
+        code="$(grep -oE '\b[A-Z0-9]{4}-[A-Z0-9]{4}\b' "$out" | head -1 || true)"
+        [ -n "$url" ] && [ -n "$code" ] && break
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.5
+    done
+    if [ -z "$url" ] || [ -z "$code" ]; then
+        kill "$pid" 2>/dev/null || true
+        rm -f "$out"
+        fail "The SSO sign-in didn't start — check the start URL and SSO region of '$name'."
+    fi
+    if ! ui_web && [ -w /dev/tty ]; then
+        printf '\n  Open:  %s\n  Code:  %s\n\n' "$url" "$code" >/dev/tty
+    fi
+    if ! prompt_yes_no "Open the link, enter the code and approve the sign-in. Done?" Y "Link" "$url" "Code" "$code"; then
+        kill "$pid" 2>/dev/null || true
+        rm -f "$out"
+        cancel "SSO sign-in cancelled."
+    fi
+    log "Waiting for AWS to confirm the sign-in ..."
+    if ! wait "$pid"; then
+        rm -f "$out"
+        fail "The SSO sign-in wasn't completed (approve it in the browser within a few minutes, then try again)."
+    fi
+    rm -f "$out"
+    log "✓ Signed in to SSO for '$name'"
+}
+
+# sso_pick NAME — choose the account and role this SSO connection uses.
+sso_pick() {
+    local name="$1" list n i labels=() ids=() roles=() v
+    list="$(creds sso-accounts "$name")"
+    mapfile -t ids < <(python3 -c 'import json, sys; [print(a["accountId"]) for a in json.loads(sys.argv[1]) if a["roles"]]' "$list")
+    [ "${#ids[@]}" -gt 0 ] || fail "This SSO login has no AWS accounts with a role you may use."
+    mapfile -t labels < <(python3 -c 'import json, sys; [print("%s — %s" % (a["accountId"], a["name"])) for a in json.loads(sys.argv[1]) if a["roles"]]' "$list")
+    i="$(prompt_menu "Which AWS account should '$name' use?" 1 "${labels[@]}")"
+    [ "$i" -ge 1 ] || fail "No account chosen."
+    SSO_ACCOUNT="${ids[$((i - 1))]}"
+    mapfile -t roles < <(python3 -c 'import json, sys; [print(r) for a in json.loads(sys.argv[1]) if a["accountId"] == sys.argv[2] for r in a["roles"]]' "$list" "$SSO_ACCOUNT")
+    i="$(prompt_menu "Which role in account $SSO_ACCOUNT?" 1 "${roles[@]}")"
+    [ "$i" -ge 1 ] || fail "No role chosen."
+    SSO_ROLE="${roles[$((i - 1))]}"
+}
+
+do_add() {
+    local method name region key secret start sso_region role_arn source mfa names=() i labels=()
+    ui_step account 1
+    method="$(prompt_menu 'How do you sign in to this AWS account?' 1 \
+        'Access keys — an access key ID and secret from IAM (AWS console → IAM → Users → you → Security credentials)' \
+        'SSO — your company signs in through AWS IAM Identity Center (a start URL like https://<name>.awsapps.com/start)' \
+        'A role — use one of your MageDevKit connections to switch into a role (another account, or more rights)')"
+    [ "$method" -ge 1 ] || fail "No sign-in method chosen."
+    ui_step account 2
+    name="$(ask_name "")"
+    case "$method" in
+        1)
+            key="$(ask_valid 'Access key ID (AKIA…)' 0 '^AKIA[A-Z0-9]{16}$' 'AKIA followed by 16 capital letters or digits')"
+            secret="$(ask_valid 'Secret access key (typing is hidden)' 1 '^[A-Za-z0-9/+=]{40}$' '40 characters')"
+            region="$(ask_region 'Default region for this account' us-east-1)"
+            set_connection "$name" "$(python3 -c 'import json, sys; print(json.dumps({"type": "keys", "region": sys.argv[1], "access_key_id": sys.argv[2], "secret_access_key": sys.stdin.read().rstrip("\n")}))' "$region" "$key" <<<"$secret")"
+            unset secret
+            ;;
+        2)
+            start="$(ask_valid 'SSO start URL (https://…/start)' 0 '^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._~/#-]*)?$' 'an https:// address')"
+            sso_region="$(ask_region 'Region of your SSO (IAM Identity Center)' us-east-1)"
+            region="$(ask_region 'Default region for AWS work' "$sso_region")"
+            set_connection "$name" "$(python3 -c 'import json, sys; print(json.dumps({"type": "sso", "region": sys.argv[1], "sso_start_url": sys.argv[2], "sso_region": sys.argv[3]}))' "$region" "$start" "$sso_region")"
+            sso_login "$name"
+            sso_pick "$name"
+            set_connection "$name" "$(python3 -c 'import json, sys; print(json.dumps({"type": "sso", "region": sys.argv[1], "sso_start_url": sys.argv[2], "sso_region": sys.argv[3], "sso_account_id": sys.argv[4], "sso_role_name": sys.argv[5]}))' "$region" "$start" "$sso_region" "$SSO_ACCOUNT" "$SSO_ROLE")"
+            ;;
+        3)
+            mapfile -t names < <(mdk_aws_names | grep -vxF -- "$name" || true)
+            [ "${#names[@]}" -gt 0 ] || fail "A role needs another MageDevKit connection to sign in with — add that one first."
+            i="$(prompt_menu 'Sign in with which connection?' 1 "${names[@]}")"
+            [ "$i" -ge 1 ] || fail "No connection chosen."
+            source="${names[$((i - 1))]}"
+            role_arn="$(ask_valid 'Role ARN (arn:aws:iam::<account>:role/<name>)' 0 '^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]{1,512}$' 'arn:aws:iam::123456789012:role/Name')"
+            mfa="$(prompt_value 'MFA device ARN, if the role needs one (Enter for none)' 0)"
+            if [ -n "$mfa" ] && ! [[ "$mfa" =~ ^arn:aws[a-z-]*:iam::[0-9]{12}:mfa/[A-Za-z0-9_+=,.@/-]{1,256}$ ]]; then
+                fail "'$mfa' isn't an MFA device ARN (arn:aws:iam::<account>:mfa/<name>)."
+            fi
+            region="$(ask_region 'Default region for this account' us-east-1)"
+            set_connection "$name" "$(python3 -c 'import json, sys; print(json.dumps({"type": "role", "region": sys.argv[1], "role_arn": sys.argv[2], "source_profile": sys.argv[3], "mfa_serial": sys.argv[4]}))' "$region" "$role_arn" "$source" "$mfa")"
+            ;;
+    esac
+    ui_step account 3
+    check_one "$name"
+    ui_step account 4
+}
+
+do_import() {
+    local list names=() labels=() i name src_cfg src_creds win
+    ui_step account 1
+    src_cfg="${MDK_IMPORT_CONFIG:-$HOME/.aws/config}"
+    src_creds="${MDK_IMPORT_CREDENTIALS:-$HOME/.aws/credentials}"
+    # On WSL, Windows keeps its own ~/.aws: offer it too.
+    win="$(ls -d /mnt/c/Users/*/.aws 2>/dev/null | head -1 || true)"
+    if [ -n "$win" ] && [ -z "${MDK_IMPORT_CONFIG:-}" ] && { [ -r "$win/config" ] || [ -r "$win/credentials" ]; }; then
+        i="$(prompt_menu 'Import from which AWS settings?' 1 "This Linux (WSL) home — ~/.aws" "Windows — $win")"
+        if [ "$i" = 2 ]; then src_cfg="$win/config"; src_creds="$win/credentials"; fi
+    fi
+    list="$(creds sources "$src_cfg" "$src_creds")"
+    mapfile -t names < <(python3 -c 'import json, sys; [print(c["name"]) for c in json.loads(sys.argv[1]) if c["type"] != "unknown"]' "$list")
+    [ "${#names[@]}" -gt 0 ] || fail "There are no AWS profiles in $(dirname "$src_cfg") to import."
+    mapfile -t labels < <(python3 -c 'import json, sys; [print("%s — %s%s" % (c["name"], c["type"], ", " + c["region"] if c["region"] else "")) for c in json.loads(sys.argv[1]) if c["type"] != "unknown"]' "$list")
+    i="$(prompt_menu "Which profile from $(dirname "$src_cfg") should MageDevKit copy? Only that one is copied (plus the login it signs in with, for a role); those files are not changed." 0 "${labels[@]}")"
+    [ "$i" -ge 1 ] || fail "No profile chosen."
+    name="${names[$((i - 1))]}"
+    ui_step_skip account 2
+    prompt_yes_no "Copy profile '$name' into MageDevKit's AWS connections?" N "From" "$(dirname "$src_cfg")" "To" "$MDK_AWS_DIR" \
+        || cancel "Nothing was imported."
+    creds import "$name" "$src_cfg" "$src_creds" >/dev/null
+    log "Imported '$name' into MageDevKit's AWS connections."
+    ui_step account 3
+    check_one "$name"
+    ui_step account 4
+}
+
+ui_flow_begin account
+case "$ACTION" in add|import|login) ui_log_to_file aws-account ;; esac
+mkdir -p "$MDK_AWS_DIR"
+chmod 700 "$MDK_AWS_DIR" "$(dirname "$MDK_AWS_DIR")" 2>/dev/null || true
+
+case "$ACTION" in
+    list) show_status ;;
+    test)
+        mdk_aws_has "$NAME_ARG" || fail "There's no MageDevKit connection called '$NAME_ARG' (see: mdk aws list)."
+        check_one "$NAME_ARG"
+        ;;
+    add) do_add ;;
+    import) do_import ;;
+    login)
+        mdk_aws_has "$NAME_ARG" || fail "There's no MageDevKit connection called '$NAME_ARG' (see: mdk aws list)."
+        ui_step_skip account 1
+        ui_step_skip account 2
+        ui_step account 3
+        sso_login "$NAME_ARG"
+        check_one "$NAME_ARG"
+        ui_step account 4
+        ;;
+    remove)
+        mdk_aws_has "$NAME_ARG" || fail "There's no MageDevKit connection called '$NAME_ARG' (see: mdk aws list)."
+        if [ -z "$YES" ] && [ "${PRESET_ACCOUNT_REMOVE:-}" != "$NAME_ARG" ]; then
+            ui_interactive || fail "Removing '$NAME_ARG' needs a yes — run it in a terminal, or add --yes."
+            prompt_yes_no "Forget MageDevKit connection '$NAME_ARG'? Its keys are deleted from $MDK_AWS_DIR (~/.aws is not touched)." N \
+                || cancel "Nothing was removed."
+        fi
+        creds remove "$NAME_ARG"
+        log "✓ Removed connection '$NAME_ARG'."
+        ;;
+esac

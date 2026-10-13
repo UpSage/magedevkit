@@ -1,7 +1,9 @@
 import io
+import os
 import unittest
 
 import helpers  # noqa: F401  (puts bin/lib/web-wizard on sys.path)
+import envs
 import webcore
 
 
@@ -81,9 +83,30 @@ class Redaction(unittest.TestCase):
             "GET /x?X-Amz-Signature=deadbeef&y=1": "deadbeef",
             "Open:  http://127.0.0.1:1/?token=AbC_123": "AbC_123",
             '"secret_key": "wJalrXUtnFEMI"': "wJalrXUtnFEMI",
+            "key ASIAABCDEFGHIJKLMNOP here": "ASIAABCDEFGHIJKLMNOP",
+            "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG": "wJalrXUtnFEMI/K7MDENG",
+            "aws_session_token=IQoJb3JpZ2luX2Vj": "IQoJb3JpZ2luX2Vj",
+            '{"SecretAccessKey": "abc123def", "SessionToken": "FwoGZXIvYXdz"}': "FwoGZXIvYXdz",
+            '"accessToken":"eyJhbGciOi.payload"': "eyJhbGciOi.payload",
         }
         for line, secret in cases.items():
             self.assertNotIn(secret, webcore.redact_patterns(line), line)
+
+    def test_child_environment_has_no_aws_login(self):
+        keep = dict(os.environ)
+        try:
+            os.environ.update(AWS_ACCESS_KEY_ID="AKIAABCDEFGHIJKLMNOP", AWS_SECRET_ACCESS_KEY="x" * 40,
+                              AWS_SESSION_TOKEN="tok", AWS_PROFILE="admin", AWS_CONFIG_FILE="/tmp/c",
+                              AWS_REGION="us-east-2", DASHBOARD_TOKEN="t")
+            env = webcore.base_env()
+            scripts_env = envs.child_env([])  # what an instance's bin/ scripts get
+        finally:
+            os.environ.clear()
+            os.environ.update(keep)
+        for k in webcore.AWS_ENV_KEYS + webcore.SECRET_ENV_KEYS:
+            self.assertNotIn(k, env)
+            self.assertNotIn(k, scripts_env)
+        self.assertEqual(env.get("AWS_REGION"), "us-east-2")  # not a login
 
     def test_patterns_leave_normal_lines(self):
         line = "Container allfasteners-249-platform-php-1 Started"

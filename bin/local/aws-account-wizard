@@ -1,0 +1,4 @@
+#!/bin/bash
+# Browser version of bin/local/aws-account — the same questions on a local webpage.
+#   aws-account-wizard add | import | login NAME     [--no-browser] [--port N]
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/web-wizard" && pwd)/launch.sh" account "$@"

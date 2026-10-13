@@ -44,13 +44,7 @@ if grep -q '^REMOTE_STORAGE_DRIVER=CHANGE_ME' "$ENV_FILE"; then
         log "Wrote S3 remote storage config to $ENV_NAME (bucket=$RS_BUCKET, region=$RS_REGION)."
 
         log "Applying remote storage configuration to Magento ..."
-        "$PLATFORM_DIR/bin/magento" setup:config:set \
-            --remote-storage-driver=aws-s3 \
-            --remote-storage-bucket="$RS_BUCKET" \
-            --remote-storage-region="$RS_REGION" \
-            --remote-storage-key="$AWS_KEY_ID" \
-            --remote-storage-secret="$AWS_SECRET" \
-            -n
+        remote_storage_apply "$RS_BUCKET" "$RS_REGION" "$AWS_KEY_ID" "$AWS_SECRET"
     fi
 else
     log "✓ Storage already configured (driver=$(env_get "$ENV_FILE" REMOTE_STORAGE_DRIVER))."

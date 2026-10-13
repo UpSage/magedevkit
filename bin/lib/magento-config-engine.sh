@@ -45,13 +45,10 @@ apply_magento_config() {
         [ -n "${REMOTE_STORAGE_BUCKET:-}" ] && [ "$REMOTE_STORAGE_BUCKET" != CHANGE_ME ] \
             || fail "REMOTE_STORAGE_DRIVER=aws-s3 but no S3 bucket is set — run bin/sync-db (or bin/local/setup) to choose one, set REMOTE_STORAGE_BUCKET in ${ENV_NAME:-env/.env.local}, or switch to REMOTE_STORAGE_DRIVER=file."
         log "Configuring S3 remote storage (bucket=$REMOTE_STORAGE_BUCKET, region=$REMOTE_STORAGE_REGION) ..."
-        "$MAGENTO" setup:config:set \
-            --remote-storage-driver=aws-s3 \
-            --remote-storage-bucket="$REMOTE_STORAGE_BUCKET" \
-            --remote-storage-region="$REMOTE_STORAGE_REGION" \
-            --remote-storage-key="$REMOTE_STORAGE_KEY" \
-            --remote-storage-secret="$REMOTE_STORAGE_SECRET" \
-            -n
+        # remote_storage_apply: the keys never go on a command line.
+        # shellcheck disable=SC1091
+        declare -F remote_storage_apply >/dev/null || source "$PLATFORM_DIR/bin/lib/aws-storage.sh"
+        remote_storage_apply "$REMOTE_STORAGE_BUCKET" "$REMOTE_STORAGE_REGION" "${REMOTE_STORAGE_KEY:-}" "${REMOTE_STORAGE_SECRET:-}"
     fi
 
     # sync-db's DB reimport rewrites the dump's own base_media_url to the shared

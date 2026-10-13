@@ -1,4 +1,4 @@
-// MageDevKit dashboard, part 2 of 5: the overview and one environment's
+// MageDevKit dashboard, part 2 of 6: the overview and one environment's
 // page — Overview, Containers, Magento (with the Magento releases card and
 // banner), Workflows, Pipeline, Logs and Operations tabs. Uses dash-core.js; see its header for the load order.
 'use strict';
@@ -580,7 +580,7 @@ function PipelineTab(env) {
         TableBody(targets.map((t) => TableRow(
           TableCell(t.env, 'font-medium'),
           TableCell(t.domain ? TextLink({ href: `https://${t.domain}/`, text: t.domain, external: true }) : '—'),
-          TableCell(`${t.profile || '?'} · ${t.region || '?'}`, 'text-muted-foreground'),
+          TableCell(`${t.account || t.profile || '?'} · ${t.region || '?'}`, 'text-muted-foreground'),
           TableCell(`${t.repo || '?'} @ ${t.branch || '?'}`, 'text-muted-foreground'),
           TableCell((g.kitOnBranch || {})[t.branch]
             ? Badge(`On origin/${t.branch}`, 'success', 'check')

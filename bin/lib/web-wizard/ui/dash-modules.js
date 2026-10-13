@@ -1,4 +1,4 @@
-// MageDevKit dashboard, part 4 of 5: the Modules tab — every Magento module
+// MageDevKit dashboard, part 4 of 6: the Modules tab — every Magento module
 // with its status, package, version and update; search, filters and paging;
 // selecting rows; turning modules on or off and updating their packages
 // (review → dry run → apply). Uses dash-core.js; see its header for the

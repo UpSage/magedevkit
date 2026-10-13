@@ -1,5 +1,5 @@
-// MageDevKit dashboard, part 5 of 5: boot. Runs after dash-core.js,
-// dash-env.js, dash-git.js and dash-modules.js have defined everything.
+// MageDevKit dashboard, part 6 of 6: boot. Runs after dash-core.js,
+// dash-env.js, dash-git.js, dash-modules.js and dash-aws.js have defined everything.
 'use strict';
 
 // ---------------------------------------------------------------------------

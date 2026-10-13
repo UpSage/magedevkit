@@ -24,6 +24,9 @@
 #   mdk permissions apply|lock|unlock
 #   mdk new NAME [options]             create an instance (bin/local/new-instance)
 #   mdk dashboard [options]            the dashboard for all instances
+#   mdk aws list | add | import | login NAME | test NAME | remove NAME
+#                                      MageDevKit's AWS connections (not an instance's)
+#   mdk aws-wizard add | import | login NAME   the same, in the browser
 #   mdk list                           instances and their folders
 #
 # Install once with bin/local/install-mdk (a symlink in ~/.local/bin).
@@ -114,6 +117,8 @@ case "$CMD" in
         p="$1"; shift; run "permissions/$p" "$@" ;;
     new) exec "$REPO/bin/local/new-instance" "$@" ;;
     dashboard) exec "$REPO/bin/local/dashboard" "$@" ;;
+    aws) exec "$REPO/bin/local/aws-account" "$@" ;;
+    aws-wizard) exec "$REPO/bin/local/aws-account-wizard" "$@" ;;
     list)
         out="$(instances)"
         [ -n "$out" ] || { echo "No instances in $ROOT yet — create one with: mdk new NAME"; exit 0; }
