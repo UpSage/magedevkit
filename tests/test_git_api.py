@@ -239,13 +239,57 @@ class GitApi(unittest.TestCase):
         # A file:// origin never authenticates, so git saved nothing; a saved
         # GitHub login looks like this:
         write(creds, "https://someone:ghp_saved0123456789@github.com\n")
-        self.assertTrue(self.status()["savedLogin"])
+        code, raw, _ = self.dash.request("GET", "/api/environments/gitty/git")
+        self.assertEqual(raw["savedLogin"], {"username": "someone"})  # who, so the page can say so
+        self.assertNotIn("ghp_saved0123456789", str(raw))               # never the token
         code, res, _ = self.post("forget_login")
         self.assertEqual(code, 200, res)
         self.assertFalse(self.status()["savedLogin"])
         self.assertFalse(os.path.exists(creds))  # emptied, so removed
         self.assertEqual(subprocess.run(["git", "-C", self.m, "config", "--local", "--get", "credential.helper"],
                                         capture_output=True).returncode, 1)
+
+    def test_update_other_branch_from_origin(self):
+        # "side" tracks origin/side; someone else moves origin/side.
+        git(self.m, "branch", "side")
+        git(self.m, "push", "-q", "-u", "origin", "side")
+        other = os.path.join(self.root, "other-side")
+        subprocess.run(["git", "clone", "-q", "-b", "side", self.origin, other], check=True)
+        write(os.path.join(other, "side.txt"), "new on origin\n")
+        git(other, "add", "side.txt")
+        git(other, "-c", "user.name=o", "-c", "user.email=o@o", "commit", "-qm", "side work")
+        git(other, "push", "-q", "origin", "side")
+        self.assertEqual(self.run_op("fetch")["status"], "done")
+        side = [b for b in self.status()["branches"] if b["name"] == "side"][0]
+        self.assertEqual(side["behind"], 1)
+        rec = self.run_op("update_branch", {"branch": "side"})
+        self.assertEqual(rec["status"], "done", rec)
+        self.assertEqual(rec["label"], "git fetch origin side → side")
+        self.assertEqual(git(self.m, "rev-parse", "side"), git(self.m, "rev-parse", "origin/side"))
+        self.assertEqual(self.status()["branch"], "main")                         # never switched
+        self.assertFalse(os.path.exists(os.path.join(self.m, "side.txt")))       # no files changed
+        # Refused: the branch you're on, unknown, no upstream, a crafted name.
+        git(self.m, "branch", "local-only")
+        for body, code in (({"branch": "main"}, 409), ({"branch": "nope"}, 400), ({"branch": "local-only"}, 400),
+                           ({"branch": "side:refs/heads/main"}, 400), ({}, 400)):
+            self.assertEqual(self.post("update_branch", body)[0], code, body)
+        # Diverged: fast-forward only, so it fails and the branch stays put.
+        git(self.m, "switch", "-q", "side")
+        write(os.path.join(self.m, "mine.txt"), "local\n")
+        git(self.m, "add", "mine.txt")
+        git(self.m, "commit", "-qm", "local side")
+        git(self.m, "switch", "-q", "main")
+        write(os.path.join(other, "side.txt"), "again\n")
+        git(other, "-c", "user.name=o", "-c", "user.email=o@o", "commit", "-qam", "again")
+        git(other, "push", "-q", "origin", "side")
+        before = git(self.m, "rev-parse", "side")
+        self.assertEqual(self.run_op("update_branch", {"branch": "side"})["status"], "failed")
+        self.assertEqual(git(self.m, "rev-parse", "side"), before)
+        git(self.m, "branch", "-D", "side", "local-only")
+
+    def test_pull_with_nothing_new(self):
+        rec = self.run_op("pull")
+        self.assertEqual(rec["status"], "done", rec)
 
     def test_set_identity_is_per_repo(self):
         before = (git(self.m, "config", "--local", "user.name"), git(self.m, "config", "--local", "user.email"))

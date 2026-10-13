@@ -327,6 +327,21 @@ function Panel({ size = 'default', cls, title } = {}, ...kids) {
   return h('div', { class: cn('rounded-lg border', PANEL_SIZES[size], cls), title }, kids);
 }
 
+// One line in a bordered list (file lists, ignored paths): items in a row,
+// divided from the next by a border. header: the list's muted top line;
+// hover: highlights under the pointer. cls is for layout/behaviour only.
+const LIST_ROW = 'flex items-center gap-2 border-b px-3 py-1.5 last:border-b-0';
+function ListRow({ header, hover, cls, ...rest } = {}, ...kids) {
+  return h('div', Object.assign({
+    class: cn(LIST_ROW, header ? 'text-muted-foreground text-xs' : null, hover ? 'hover:bg-muted/50' : null, cls),
+    role: header ? null : 'listitem',
+  }, rest), kids);
+}
+// A bordered, scrolling box of ListRows (on its own, not inside a DropZone).
+function ListBox({ label } = {}, ...rows) {
+  return h('div', { class: 'max-h-64 overflow-auto rounded-lg border', role: 'list', 'aria-label': label }, rows);
+}
+
 // A Card that opens and closes (native <details>).
 function Collapsible({ title, iconName }, ...kids) {
   return h('details', { class: 'group bg-card text-card-foreground rounded-xl border shadow-sm' },
@@ -655,13 +670,34 @@ function FormHelp(text, id) {
   return h('p', { id, class: 'text-muted-foreground text-xs', text });
 }
 
-// Replaces a log <pre>'s text, keeping it pinned to the bottom when the
-// reader was already there (or `stick`), and leaving it alone when they had
-// scrolled up to read.
+// Replaces a log <pre>'s text, keeping it pinned to the bottom while the
+// reader is there (or `stick`), and leaving it where they scrolled up to read.
+// Where the reader is lives on the element (data-follow: "bottom" or their
+// scrollTop), kept up to date by its scroll events — not read from the live
+// scroll position, which the browser resets to the top whenever a re-render
+// removes the element and puts it back. restoreLogScroll() re-applies it.
 function setLogText(pre, text, stick) {
-  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  if (!pre.dataset.follow) {
+    pre.dataset.follow = 'bottom';
+    pre.addEventListener('scroll', () => {
+      if (!pre.isConnected || !pre.clientHeight) return;
+      pre.dataset.follow = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40 ? 'bottom' : String(Math.round(pre.scrollTop));
+    });
+  }
+  if (stick) pre.dataset.follow = 'bottom';
   pre.textContent = text;
-  if (atBottom || stick) pre.scrollTop = pre.scrollHeight;
+  restoreLogScroll(pre);
+}
+
+// Puts every log <pre> under `scope` (or `scope` itself) back where its
+// reader was: at the bottom, following new output, or where they scrolled to.
+// Call after a re-render has put the page's elements back.
+function restoreLogScroll(scope = document) {
+  const pres = scope.matches && scope.matches('pre[data-follow]') ? [scope] : scope.querySelectorAll('pre[data-follow]');
+  for (const pre of pres) {
+    if (!pre.isConnected) continue;
+    pre.scrollTop = pre.dataset.follow === 'bottom' ? pre.scrollHeight : Number(pre.dataset.follow) || 0;
+  }
 }
 
 // ---------------------------------------------------------------------------

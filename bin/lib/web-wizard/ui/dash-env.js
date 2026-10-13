@@ -126,13 +126,16 @@ function WatchPanel() {
         h('span', { class: 'text-muted-foreground text-xs', text: took(w.rec.startedAt, w.rec.endedAt) || '' })),
       CardAction(h('div', { class: 'flex gap-2' },
         active && w.rec.cancellable ? Button({ variant: 'outline', size: 'sm', label: 'Cancel', onClick: () => cancelOperation(w.envId, w.opId) }) : null,
-        Button({ variant: 'ghost', size: 'icon-sm', iconName: 'x', title: 'Hide output', onClick: () => { S.watch = null; clearTimeout(watchTimer); render(); } })))),
+        Button({ variant: 'ghost', size: 'icon-sm', iconName: 'x', title: 'Hide output', onClick: () => { S.watchHidden = w.opId; S.watch = null; clearTimeout(watchTimer); render(); } })))),
     CardContent(watchPre)));
 }
 
 function renderWatch() {
   const slot = document.getElementById('watch');
-  if (slot) slot.replaceWith(WatchPanel());
+  if (!slot) return;
+  const panel = WatchPanel();
+  slot.replaceWith(panel);
+  restoreLogScroll(panel);
 }
 
 // -- Overview tab ---------------------------------------------------------------
@@ -648,8 +651,9 @@ function OperationsTab(env) {
   const ops = env.operations || [];
   if (!opLogPre) opLogPre = LogBlock({ size: 'xl' });
   if (opLogPre.dataset.op !== S.opLog.opId || opLogPre.textContent !== S.opLog.text) {
+    const other = opLogPre.dataset.op !== (S.opLog.opId || '');
     opLogPre.dataset.op = S.opLog.opId || '';
-    opLogPre.textContent = S.opLog.text;
+    setLogText(opLogPre, S.opLog.text, other);  // a newly picked log starts at its end
   }
   const rows = ops.map((op) => h('li', { class: 'flex flex-wrap items-center gap-3 py-3' },
     OpBadge(op.status),

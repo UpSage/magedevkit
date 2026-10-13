@@ -699,21 +699,29 @@ the sidebar. The platform version (the repo's `VERSION` file) is at the foot of 
   - **Pipeline**: whether `magento/` is pipeline-ready (see "Deploying to EC2");
   - **Git** (`magento/`):
     - branches: switch, create a new one, or delete a local one. Delete never touches origin; a branch
-      with commits that exist nowhere else is only deleted after you confirm how many would be lost;
+      with commits that exist nowhere else is only deleted after you confirm how many would be lost.
+      To work on a branch from origin, pick it (marked "remote") and **Switch** — you get a local
+      copy that tracks it. Other local branches that are behind origin are listed with **Update from
+      origin**, which fast-forwards them without switching (`git fetch origin <branch>:<branch>`; no
+      files change);
     - changed files in two columns, Unstaged and Staged. Drag files between them, or use the arrows,
       to stage and unstage (`git add` / `git restore --staged`). A file with both kinds of changes
       shows in both columns as "partly staged", and what `.gitignore` keeps out is listed under
       Ignored. You can also view a file's diff or discard its changes (asks first);
     - commit: **Commit (N)** appears once files are staged and opens a dialog for the message;
-    - fetch, pull (fast-forward only) and push, with ahead/behind origin;
+    - fetch, pull (always available on a branch that tracks origin; fast-forward only) and push, with
+      ahead/behind origin;
     - recent commits, with the ones not pushed yet marked.
 
-    **Everything is per repo.** Commits are made with this repo's own name and email (shown on the
-    tab; **Set**/**Change** saves them in `magento/.git/config`, and a commit without one asks for
-    them first). Fetch, pull and push use the login saved for this repo, if any. When there isn't
-    one, the dialog takes a GitHub username and personal access token: used for that one command and
-    never saved or logged — or, with **Remember my credentials** ticked, saved for this repo only in
-    `magento/.git/credentials` (readable only by you). **Forget** removes it. Your global git config
+    **GitHub access and commit author are separate.** **GitHub access** shows "Signed in as
+    <username>" when this repo has a saved login — then Fetch just runs, and Pull/Push only confirm
+    what they do. **Sign in** / **Use a different login** asks for a GitHub username and personal
+    access token and checks it with a fetch; with **Remember it for this repo** (ticked by default)
+    git saves it — only once GitHub accepts it — in `magento/.git/credentials` (readable only by
+    you). Unticked, it's used for that one command and never saved or logged. **Forget** removes it.
+    If GitHub rejects the saved login, the tab says so and the next command asks again. **Commit
+    author** is only the name and email written on your commits (**Edit** saves them in
+    `magento/.git/config`, and a commit without one asks first) — not a login. Your global git config
     is never touched, so each store can use a different GitHub account. The setup wizard's GitHub
     clone works the same way. Nothing here force-pushes, rebases or merges;
   - **Logs**: container logs, Magento `var/log`, platform `logs/`;
@@ -999,6 +1007,25 @@ initializes the volume, and `app/etc/env.php` keeps its own copy. Either run the
 `mdk platform down -v` (deletes the database) and re-run `mdk setup-wizard`.
 
 ## Changelog
+
+### 1.2.0
+
+**Dashboard Git tab: easier pulling and sign-in.**
+- **Signed in as …:** with a saved GitHub login, Fetch runs straight away and Pull/Push only confirm;
+  the login form appears only when there's no saved login or GitHub rejected it. **Remember** is on
+  by default, and the login is saved only once GitHub accepts it.
+- **GitHub access** and **Commit author** are separate rows — **Edit** (was "Change") is only the
+  name and email on your commits.
+- **Pull** is always available on a branch that tracks origin.
+- **Update from origin** fast-forwards another local branch without switching to it.
+- **Commit** is always shown in the Staged column and enabled once something is staged; **Push N
+  commit(s)** also appears on the Recent commits card when commits there aren't on origin yet.
+
+**Running operations.** The dashboard shows the newest running operation — also after a reload, or
+when it was started from the terminal, a wizard or another tab (hiding it keeps it hidden). Its log
+stays at the bottom while it runs, through every refresh; scroll up to read and it stays put,
+scroll back down and it follows again. The Operations tab's log of a running operation updates the
+same way.
 
 ### 1.1.0 (2026-10-12)
 

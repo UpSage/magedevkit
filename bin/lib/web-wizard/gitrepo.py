@@ -4,14 +4,15 @@ Reads (status, diff) run directly. Local writes (stage, unstage, commit,
 create_branch, switch, discard, delete_branch, set_identity, forget_login)
 run synchronously while holding the instance lock, so they never overlap a
 wizard or a dashboard action.
-Network commands (fetch, pull, push) run as dashboard operations
-(ops.spawn_git), so their output shows in the watch panel and in Operations.
+Network commands (fetch, pull, push, update_branch) run as dashboard
+operations (ops.spawn_git), so their output shows in the watch panel and in
+Operations.
 
 Every git call is a fixed argv — no shell — and the only user text that
 reaches it is validated: paths must be in the current `git status`, branch
 names must pass `git check-ref-format --branch`, and the commit message goes
-in on stdin. Nothing here force-pushes, rewrites history or merges: pull is
-fast-forward only.
+in on stdin. Nothing here force-pushes, rewrites history or merges: pull and
+update_branch are fast-forward only.
 
 Identity and logins are per repo, never global: the commit name/email are
 set in magento/.git/config (set_identity), and a login the user chose to
@@ -28,6 +29,7 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.parse
 
 import envs
 import ops
@@ -39,7 +41,8 @@ MAX_IGNORED = 200
 MAX_DIFF = 200 * 1024
 MAX_MESSAGE = 5000
 LOG_COUNT = 15
-CRED_RE = re.compile(r"^https://[^@\s/]+@github\.com/?$")
+CRED_RE = re.compile(r"^https://([^@\s/:]+)(?::[^@\s/]*)?@github\.com/?$")
+GITHUB_USER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 GITHUB_ERASE = "protocol=https\nhost=github.com\n\n"
 
 
@@ -53,16 +56,23 @@ def _store_helper(e):
 
 
 def saved_login(e):
-    """Whether this repo has a GitHub login saved for it: its local helper is
-    the per-repo store and that file has a github.com line (only matched,
-    never read out or sent anywhere)."""
+    """The GitHub login saved for this repo, as {"username": …} (None when
+    the name isn't a plain GitHub username), or None when there's none: its
+    local helper is the per-repo store and that file has a github.com line.
+    Only the username is read out, so the page can say who's signed in — the
+    token never leaves the file."""
     if _store_helper(e) not in _helpers(e):
-        return False
+        return None
     try:
         with open(creds_file(e)) as f:
-            return any(CRED_RE.match(line.strip()) for line in f)
+            for line in f:
+                m = CRED_RE.match(line.strip())
+                if m:
+                    user = urllib.parse.unquote(m.group(1))
+                    return {"username": user if GITHUB_USER_RE.match(user) else None}
     except OSError:
-        return False
+        pass
+    return None
 
 
 def _helpers(e):
@@ -474,7 +484,7 @@ LOCAL = {"stage": _stage, "unstage": _unstage, "commit": _commit, "create_branch
 # Network commands → dashboard operations
 # ---------------------------------------------------------------------------
 
-NETWORK = ("fetch", "pull", "push")
+NETWORK = ("fetch", "pull", "push", "update_branch")
 
 
 def network(e, command, body, all_envs):
@@ -487,6 +497,24 @@ def network(e, command, body, all_envs):
         if not st["branch"] or not st["upstream"]:
             raise ops.OpError(400, "This branch has no upstream to pull from.")
         args, label = ["pull", "--ff-only"], "git pull (%s)" % st["upstream"]
+    elif command == "update_branch":
+        # Another local branch, fast-forwarded to its upstream without
+        # switching to it: git fetch origin <upstream>:<local> refuses
+        # anything that isn't a fast-forward (no "+") and the checked-out
+        # branch, and touches no files.
+        name = (body or {}).get("branch")
+        branch = next((b for b in st["branches"] if b["name"] == name), None)
+        if not branch:
+            raise ops.OpError(400, "Unknown local branch.")
+        if name == st["branch"]:
+            raise ops.OpError(409, "That's the branch you're on — use Pull for it.")
+        upstream = branch["upstream"] or ""
+        if not upstream.startswith("origin/") or branch["gone"]:
+            raise ops.OpError(400, "%s doesn't track a branch on origin." % name)
+        _valid_branch(e, name)
+        _valid_branch(e, upstream[len("origin/"):])
+        args = ["fetch", "origin", "refs/heads/%s:refs/heads/%s" % (upstream[len("origin/"):], name)]
+        label = "git fetch origin %s → %s" % (upstream[len("origin/"):], name)
     elif command == "push":
         if not st["branch"]:
             raise ops.OpError(400, "Switch to a branch first (HEAD is detached).")

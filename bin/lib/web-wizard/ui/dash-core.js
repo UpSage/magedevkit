@@ -44,6 +44,7 @@ const S = {
   detail: null,
   error: null,
   watch: null,        // { envId, opId, text, rec } — the action whose output is shown
+  watchHidden: null,  // the operation whose output was hidden — not shown again on its own
   logs: { source: null, lines: '300', text: '', follow: false, loading: false },
   opLog: { opId: null, text: '' },
   disk: null,
@@ -209,7 +210,7 @@ window.addEventListener('hashchange', () => {
   const prev = S.route;
   S.route = parseRoute();
   if (prev.view !== S.route.view || prev.id !== S.route.id) {
-    S.detail = null; S.disk = null; S.opLog = { opId: null, text: '' };
+    S.detail = null; S.disk = null; S.opLog = { opId: null, text: '' }; S.watchHidden = null;
     S.logs = { source: null, lines: '300', text: '', follow: false, loading: false };
     logsPre = null; opLogPre = null;
     S.git = null; S.gitError = null; S.gitDiff = null; S.gitNeedsLogin = false;
@@ -231,7 +232,12 @@ async function refresh() {
     // Server unreachable (status 0): keep showing what we had, with the banner.
     if (res.status !== 0) S.detail = res.ok ? res.data : null;
     S.error = res.ok ? null : serverError(res);
+    adoptRunningOperation();
     if (S.route.tab === 'logs' && S.logs.follow) await loadLog(true);
+    if (S.route.tab === 'operations' && S.opLog.opId && S.detail
+      && (S.detail.operations || []).some((o) => o.id === S.opLog.opId && ['starting', 'running'].includes(o.status))) {
+      await loadOpLog(S.detail.id, S.opLog.src, S.opLog.opId, { quiet: true });
+    }
     if (S.route.tab === 'git') await loadGit();
     if (S.route.tab === 'modules') await loadModules();
     // The sidebar lists every environment: refreshed every 30 s here.
@@ -283,6 +289,21 @@ async function runAction(env, name, body, opts = {}) {
   watchPre = null;
   watchOperation();
   refresh();
+}
+
+// The watch panel follows the newest running operation of this environment
+// even when this page didn't start it — another tab, a reload, the terminal
+// or a wizard — unless its output was hidden. A watch that's still running
+// (it may carry an onDone, e.g. the module dry run → apply) is never replaced.
+function adoptRunningOperation() {
+  const d = S.detail;
+  if (!d) return;
+  if (S.watch && S.watch.envId === d.id && ['starting', 'running'].includes(S.watch.rec.status)) return;
+  const op = (d.operations || []).find((o) => ['starting', 'running'].includes(o.status));
+  if (!op || op.id === S.watchHidden || (S.watch && S.watch.opId === op.id)) return;
+  S.watch = { envId: d.id, opId: op.id, label: op.label || op.kind, text: '', rec: op };
+  watchPre = null;
+  watchOperation();
 }
 
 let watchTimer = null;
@@ -438,12 +459,17 @@ async function loadLog(quiet) {
   renderLogText();
 }
 
-async function loadOpLog(envId, src, opId) {
-  S.opLog = { opId, text: 'Loading…' };
-  render();
+// quiet: a re-read of the log already shown (a running operation's, every
+// poll) — no "Loading…" and no extra render; refresh() renders after.
+async function loadOpLog(envId, src, opId, { quiet } = {}) {
+  if (!quiet) {
+    S.opLog = { opId, src, text: 'Loading…' };
+    render();
+  }
   const res = await getJSON(`/api/environments/${encodeURIComponent(envId)}/logs?source=${encodeURIComponent(src)}&lines=1000`);
+  if (S.opLog.opId !== opId) return;  // another log was picked meanwhile
   S.opLog.text = res.ok ? res.data.text : errorText(res);
-  render();
+  if (!quiet) render();
 }
 
 async function loadDisk(env) {
@@ -513,6 +539,7 @@ function render() {
   renderSidebar();
   if (S.route.view === 'env') renderEnvPage();
   else renderOverview();
+  restoreLogScroll();  // the logs were taken out and put back: scroll as the reader left them
 }
 
 function ErrorBanner() {
