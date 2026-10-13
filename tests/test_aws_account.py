@@ -10,14 +10,15 @@ import subprocess
 import tempfile
 import unittest
 
+import fakes
 import helpers
 
 LIB = os.path.join(helpers.REPO, "bin", "lib")
 CREDS = os.path.join(LIB, "aws-credentials.py")
 PROFILES = os.path.join(LIB, "aws-profiles.py")
 ACCOUNT = os.path.join(helpers.REPO, "bin", "local", "aws-account")
-KEY = "AKIAABCDEFGHIJKLMNOP"
-SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+KEY = fakes.AWS_KEY
+SECRET = fakes.AWS_SECRET
 
 # Records the environment each call got (the login it could have used), then
 # answers like the AWS CLI for the few commands MageDevKit runs.
@@ -54,8 +55,8 @@ class AwsConnections(unittest.TestCase):
                                      "source_profile = default\nregion = us-east-2\n\n"
                                      "[profile helper]\ncredential_process = /usr/bin/get-keys\n", 0o600)
         helpers.write(self.user_creds, "[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n\n"
-                                       "[shop-s3]\naws_access_key_id = AKIASHOPSHOPSHOPSHOP\n"
-                                       "aws_secret_access_key = %s\n" % (KEY, SECRET, "s" * 40), 0o600)
+                                       "[shop-s3]\naws_access_key_id = %s\n"
+                                       "aws_secret_access_key = %s\n" % (KEY, SECRET, fakes.AWS_KEY_SHOP, "s" * 40), 0o600)
         self.user_before = (helpers.read(self.user_cfg), helpers.read(self.user_creds))
 
     def tearDown(self):
@@ -162,7 +163,7 @@ class AwsConnections(unittest.TestCase):
         self.assertEqual([c["name"] for c in json.loads(p.stdout)], ["deployer", "default"])
         mine = helpers.read(os.path.join(self.mdk, "credentials"))
         self.assertIn(SECRET, mine)
-        self.assertNotIn("AKIASHOPSHOPSHOPSHOP", mine)  # the store's S3 profile stays where it is
+        self.assertNotIn(fakes.AWS_KEY_SHOP, mine)  # the store's S3 profile stays where it is
         again = self.creds("import", "deployer", self.user_cfg, self.user_creds)
         self.assertEqual(again.returncode, 1)
         self.assertIn("already has a connection", again.stderr)
@@ -178,7 +179,7 @@ class AwsConnections(unittest.TestCase):
                                                        "sso_start_url": "https://corp.awsapps.com/start",
                                                        "sso_region": "us-east-1"}))
         p = subprocess.run(["python3", PROFILES], capture_output=True, text=True,
-                           env=self.env(AWS_ACCESS_KEY_ID="AKIASTRAYSTRAYSTRAY0", AWS_SECRET_ACCESS_KEY="stray",
+                           env=self.env(AWS_ACCESS_KEY_ID=fakes.AWS_KEY_STRAY, AWS_SECRET_ACCESS_KEY="stray",
                                         AWS_PROFILE="default"))
         self.assertEqual(p.returncode, 0, p.stderr)
         rows = {r["name"]: r for r in json.loads(p.stdout)}
@@ -186,7 +187,7 @@ class AwsConnections(unittest.TestCase):
                          ("ok", "485849269510", "acme-dev"))
         self.assertEqual(rows["expired"]["status"], "sso-expired")
         log = helpers.read(self.log)
-        self.assertNotIn("AKIASTRAY", log)
+        self.assertNotIn(fakes.AWS_KEY_STRAY, log)
         self.assertNotIn("AWS_PROFILE=default", log)
         self.assertNotIn(os.path.join(self.home, ".aws"), log)
         self.assertIn("AWS_CONFIG_FILE=%s" % os.path.join(self.mdk, "config"), log)
@@ -195,13 +196,13 @@ class AwsConnections(unittest.TestCase):
         self.add_keys()
         script = 'source "%s/ui.sh"; source "%s/util.sh"; source "%s/aws.sh"; mdk_aws_require_account acme "$1"' % (LIB, LIB, LIB)
         ok = subprocess.run(["bash", "-c", script, "x", "485849269510"], capture_output=True, text=True,
-                            env=self.env(AWS_ACCESS_KEY_ID="AKIASTRAYSTRAYSTRAY0"))
+                            env=self.env(AWS_ACCESS_KEY_ID=fakes.AWS_KEY_STRAY))
         self.assertEqual(ok.returncode, 0, ok.stderr)
         wrong = subprocess.run(["bash", "-c", script, "x", "111122223333"], capture_output=True, text=True,
                                env=self.env())
         self.assertEqual(wrong.returncode, 1)
         self.assertIn("reaches account 485849269510, not 111122223333", wrong.stderr)
-        self.assertNotIn("AKIASTRAY", helpers.read(self.log))
+        self.assertNotIn(fakes.AWS_KEY_STRAY, helpers.read(self.log))
 
     # --- bin/local/aws-account ------------------------------------------------
 
@@ -254,7 +255,7 @@ class AwsAccountsPage(unittest.TestCase):
         helpers.write(os.path.join(cls.bin, "aws"), FAKE_AWS, 0o755)
         helpers.write(os.path.join(cls.bin, "docker"), "#!/bin/sh\nexit 1\n", 0o755)
         # A key exported in the shell that starts the dashboard: never used.
-        cls.dash = helpers.Dashboard(cls.d, cls.d, cls.bin, {"FAKE_AWS_LOG": cls.log, "AWS_ACCESS_KEY_ID": "AKIASTRAYSTRAYSTRAY0",
+        cls.dash = helpers.Dashboard(cls.d, cls.d, cls.bin, {"FAKE_AWS_LOG": cls.log, "AWS_ACCESS_KEY_ID": fakes.AWS_KEY_STRAY,
                                                             "AWS_SECRET_ACCESS_KEY": "stray-secret", "AWS_PROFILE": "default"})
         cls.mdk = os.path.join(cls.dash.tmp, "config", "magedevkit", "aws")
         for name in ("acme", "spare"):
@@ -281,7 +282,7 @@ class AwsAccountsPage(unittest.TestCase):
         self.assertNotIn(SECRET, json.dumps(body))
         self.assertNotIn(KEY, json.dumps(body))
         log = helpers.read(self.log)
-        self.assertNotIn("AKIASTRAY", log)
+        self.assertNotIn(fakes.AWS_KEY_STRAY, log)
         self.assertNotIn("AWS_PROFILE=default", log)
 
     def test_bad_requests(self):

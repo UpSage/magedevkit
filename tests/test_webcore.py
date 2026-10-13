@@ -2,6 +2,7 @@ import io
 import os
 import unittest
 
+import fakes
 import helpers  # noqa: F401  (puts bin/lib/web-wizard on sys.path)
 import envs
 import webcore
@@ -77,16 +78,16 @@ class Redaction(unittest.TestCase):
             "DB_PASSWORD=hunter2": "hunter2",
             "'password' => 'p4ssw0rd!'": "p4ssw0rd!",
             "--db-password=magento123": "magento123",
-            "key AKIAABCDEFGHIJKLMNOP here": "AKIAABCDEFGHIJKLMNOP",
+            "key %s here" % fakes.AWS_KEY: fakes.AWS_KEY,
             "Authorization: Bearer abcdefghijklmnop": "abcdefghijklmnop",
             "https://user:s3cretpass@repo.example.com/x": "s3cretpass",
             "GET /x?X-Amz-Signature=deadbeef&y=1": "deadbeef",
             "Open:  http://127.0.0.1:1/?token=AbC_123": "AbC_123",
-            '"secret_key": "wJalrXUtnFEMI"': "wJalrXUtnFEMI",
-            "key ASIAABCDEFGHIJKLMNOP here": "ASIAABCDEFGHIJKLMNOP",
-            "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG": "wJalrXUtnFEMI/K7MDENG",
-            "aws_session_token=IQoJb3JpZ2luX2Vj": "IQoJb3JpZ2luX2Vj",
-            '{"SecretAccessKey": "abc123def", "SessionToken": "FwoGZXIvYXdz"}': "FwoGZXIvYXdz",
+            '"secret_key": "fakeValue1234"': "fakeValue1234",
+            "key %s here" % fakes.AWS_TEMP_KEY: fakes.AWS_TEMP_KEY,
+            "aws_secret_access_key = " + fakes.AWS_SECRET: fakes.AWS_SECRET,
+            "aws_session_token=" + fakes.AWS_SESSION_TOKEN: fakes.AWS_SESSION_TOKEN,
+            '{"SecretAccessKey": "abc123def", "SessionToken": "%s"}' % fakes.AWS_SESSION_TOKEN: fakes.AWS_SESSION_TOKEN,
             '"accessToken":"eyJhbGciOi.payload"': "eyJhbGciOi.payload",
         }
         for line, secret in cases.items():
@@ -95,7 +96,7 @@ class Redaction(unittest.TestCase):
     def test_child_environment_has_no_aws_login(self):
         keep = dict(os.environ)
         try:
-            os.environ.update(AWS_ACCESS_KEY_ID="AKIAABCDEFGHIJKLMNOP", AWS_SECRET_ACCESS_KEY="x" * 40,
+            os.environ.update(AWS_ACCESS_KEY_ID=fakes.AWS_KEY, AWS_SECRET_ACCESS_KEY=fakes.AWS_SECRET,
                               AWS_SESSION_TOKEN="tok", AWS_PROFILE="admin", AWS_CONFIG_FILE="/tmp/c",
                               AWS_REGION="us-east-2", DASHBOARD_TOKEN="t")
             env = webcore.base_env()

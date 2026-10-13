@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 
+import fakes
 import helpers
 import envs
 import pipeline
@@ -190,22 +191,32 @@ class SecretScan(unittest.TestCase):
         d = tempfile.mkdtemp(prefix="scan-")
         try:
             bad = {
-                "a.env": "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n",
-                "b.ini": "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
-                "c.pem": "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n",
-                "d.php": "'crypt' => ['key' => 'a3f5c0e1b2d4f6a8c0e2b4d6f8a0c2e4'],\n",
-                "e.json": '{"http-basic": {"repo.magento.com": {"username": "0123456789abcdef0123456789abcdef"}}}\n',
-                "f.sh": "TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n",
+                "a.env": "AWS_ACCESS_KEY_ID=%s\n" % fakes.AWS_KEY,
+                "b.ini": "aws_secret_access_key = %s\n" % fakes.AWS_SECRET,
+                "c.pem": fakes.PRIVATE_KEY_HEADER + "\nMIIE\n",
+                "d.php": "'crypt' => ['key' => '%s'],\n" % fakes.CRYPT_KEY,
+                "e.json": '{"http-basic": {"repo.magento.com": {"username": "%s"}}}\n' % fakes.MAGENTO_REPO_KEY,
+                "f.sh": "TOKEN=%s\n" % fakes.GITHUB_TOKEN,
             }
             for name, text in bad.items():
                 helpers.write(os.path.join(d, name), text)
                 p = self.scan(os.path.join(d, name))
                 self.assertEqual(p.returncode, 1, name)
                 self.assertIn(name + ":", p.stdout)
-                for secret in ("AKIAABCDEFGHIJKLMNOP", "wJalrXUtnFEMI", "a3f5c0e1b2d4", "0123456789abcdef", "ghp_abc"):
+                for secret in (fakes.AWS_KEY, fakes.AWS_SECRET, fakes.CRYPT_KEY, fakes.MAGENTO_REPO_KEY, fakes.GITHUB_TOKEN):
                     self.assertNotIn(secret, p.stdout)
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+    def test_the_repo_holds_no_credential_shaped_literals(self):
+        # Fake values are built at run time (tests/fakes.py), so GitHub's
+        # secret scanning has nothing to flag; only the detector's own regex
+        # lines may look like one.
+        files = subprocess.run(["git", "-C", helpers.REPO, "ls-files"], capture_output=True, text=True,
+                               check=True).stdout.split("\n")
+        files = [os.path.join(helpers.REPO, f) for f in files if f and os.path.isfile(os.path.join(helpers.REPO, f))]
+        p = self.scan(*files)
+        self.assertEqual(p.returncode, 0, p.stdout)
 
     def test_kit_templates_are_clean(self):
         files = subprocess.run(["git", "-C", helpers.REPO, "ls-files", "pipeline/templates"], capture_output=True,

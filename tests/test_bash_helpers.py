@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 
+import fakes
 import helpers
 
 LIB = os.path.join(helpers.REPO, "bin", "lib")
@@ -344,11 +345,11 @@ class S3Storage(unittest.TestCase):
 case "$*" in
   "sts get-caller-identity"*) exit 0 ;;
   "configure get region"*) echo eu-west-1 ;;
-  "configure get aws_access_key_id"*) echo AKIAFAKEFAKEFAKE0000 ;;
+  "configure get aws_access_key_id"*) echo %(key)s ;;
   "configure get aws_secret_access_key"*) echo fake-secret ;;
   "s3api head-bucket"*) exit 0 ;;
 esac
-""", 0o755)
+""".replace("%(key)s", fakes.AWS_KEY_MEDIA), 0o755)
         helpers.write(os.path.join(self.d, ".env"), "REMOTE_STORAGE_DRIVER=CHANGE_ME\nREMOTE_STORAGE_BUCKET=old\n")
         os.makedirs(os.path.join(self.d, "home", ".aws"))
         helpers.write(os.path.join(self.d, "home", ".aws", "credentials"), "[shop]\n")
@@ -406,11 +407,11 @@ case "$*" in
   "sts get-caller-identity"*) exit 0 ;;
   "iam simulate-principal-policy"*) printf 'iam:CreateUser\tec2:RunInstances\n' ;;
   "configure get region"*) echo eu-west-1 ;;
-  "configure get aws_access_key_id"*) echo AKIAFAKEFAKEFAKE0000 ;;
+  "configure get aws_access_key_id"*) echo %(key)s ;;
   "configure get aws_secret_access_key"*) echo fake-secret ;;
   "s3api head-bucket"*) exit 0 ;;
 esac
-"""
+""".replace("%(key)s", fakes.AWS_KEY_MEDIA)
         p = self.run_choose(wide)
         self.assertEqual(p.returncode, 130, p.stdout + p.stderr)  # nobody to say yes: cancelled
         self.assertIn("may also do: iam:CreateUser ec2:RunInstances", p.stdout)
