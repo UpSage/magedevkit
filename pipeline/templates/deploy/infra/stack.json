@@ -1,0 +1,1613 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "MageDevKit pipeline kit: one Magento environment on EC2 — network, box, DNS, ECR, CodeBuild, CodeDeploy, CodePipeline and operator access. Created and updated by the provision wizard (mdk provision-wizard), never by the pipeline.",
+  "Metadata": {
+    "MageDevKit": {
+      "generated": "@@HEADER@@",
+      "parameters": "deploy/infra/<env>.params.json, written by the pipeline wizard from its answers.",
+      "secrets": "None here: the database, RabbitMQ and crypt key, and composer_auth are SSM SecureStrings under /<App>/<Env>/, written by the provision wizard. This template only grants reading them.",
+      "replacement": "Changing ImageId, VolumeGb or the subnet replaces the box — and with it its database. The provision wizard asks for a typed confirmation before it lets that happen."
+    }
+  },
+  "Parameters": {
+    "App": {
+      "Type": "String",
+      "AllowedPattern": "^[a-z][a-z0-9-]{1,23}$",
+      "Description": "Name of the AWS resources (ECR repos, pipeline, /opt/<App> on the box)."
+    },
+    "Env": {
+      "Type": "String",
+      "AllowedPattern": "^[a-z][a-z0-9-]{1,15}$",
+      "Description": "Environment name (dev, staging, …)."
+    },
+    "Domain": {
+      "Type": "String",
+      "AllowedPattern": "^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$",
+      "Description": "Store hostname."
+    },
+    "HostedZoneId": {
+      "Type": "String",
+      "AllowedPattern": "^Z[A-Z0-9]{1,32}$",
+      "Description": "Route 53 public hosted zone that holds Domain."
+    },
+    "InstanceType": {
+      "Type": "String",
+      "AllowedPattern": "^[a-z][a-z0-9-]*\\.[a-z0-9]+$"
+    },
+    "VolumeGb": {
+      "Type": "Number",
+      "MinValue": 30,
+      "MaxValue": 2000
+    },
+    "ImageId": {
+      "Type": "AWS::EC2::Image::Id",
+      "Description": "Ubuntu 24.04 AMI, looked up once by the pipeline wizard and kept (a new one replaces the box)."
+    },
+    "GithubRepo": {
+      "Type": "String",
+      "AllowedPattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "GithubConnectionArn": {
+      "Type": "String",
+      "AllowedPattern": "^arn:aws[a-z-]*:(codestar-connections|codeconnections):[a-z0-9-]+:[0-9]{12}:connection/[A-Za-z0-9-]+$"
+    },
+    "Branch": {
+      "Type": "String",
+      "AllowedPattern": "^[A-Za-z0-9._/-]+$"
+    },
+    "StaticLocales": {
+      "Type": "String",
+      "AllowedPattern": "^[a-z]{2}_[A-Z]{2}( [a-z]{2}_[A-Z]{2})*$"
+    },
+    "MediaBucket": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$",
+      "Description": "S3 bucket for pub/media (blank: on the box's disk)."
+    },
+    "DumpBucket": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$",
+      "Description": "S3 bucket with database dumps the box may read (blank: none)."
+    },
+    "OffHours": {
+      "Type": "String",
+      "Default": "no",
+      "AllowedValues": [
+        "yes",
+        "no"
+      ],
+      "Description": "Stop the box evenings and weekends."
+    },
+    "Timezone": {
+      "Type": "String",
+      "Default": "UTC"
+    },
+    "LogRetentionDays": {
+      "Type": "Number",
+      "Default": 14,
+      "AllowedValues": [
+        1,
+        3,
+        5,
+        7,
+        14,
+        30,
+        60,
+        90,
+        120,
+        150,
+        180,
+        365
+      ]
+    }
+  },
+  "Conditions": {
+    "HasMedia": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "MediaBucket"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "HasDumps": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "DumpBucket"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "StopOffHours": {
+      "Fn::Equals": [
+        {
+          "Ref": "OffHours"
+        },
+        "yes"
+      ]
+    }
+  },
+  "Resources": {
+    "Vpc": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.40.0.0/16",
+        "EnableDnsHostnames": true,
+        "EnableDnsSupport": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${App}-${Env}"
+            }
+          }
+        ]
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${App}-${Env}"
+            }
+          }
+        ]
+      }
+    },
+    "GatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "InternetGatewayId": {
+          "Ref": "InternetGateway"
+        }
+      }
+    },
+    "PublicSubnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "CidrBlock": "10.40.1.0/24",
+        "MapPublicIpOnLaunch": true,
+        "AvailabilityZone": {
+          "Fn::Select": [
+            0,
+            {
+              "Fn::GetAZs": ""
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${App}-${Env}-public"
+            }
+          }
+        ]
+      }
+    },
+    "PublicRouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${App}-${Env}-public"
+            }
+          }
+        ]
+      }
+    },
+    "PublicRoute": {
+      "Type": "AWS::EC2::Route",
+      "DependsOn": "GatewayAttachment",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PublicRouteTable"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {
+          "Ref": "InternetGateway"
+        }
+      }
+    },
+    "PublicSubnetRouteTable": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "PublicSubnet"
+        },
+        "RouteTableId": {
+          "Ref": "PublicRouteTable"
+        }
+      }
+    },
+    "WebSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupName": {
+          "Fn::Sub": "${App}-${Env}-web"
+        },
+        "GroupDescription": "HTTP and HTTPS in; everything out. No SSH (use SSM).",
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "HTTP (ACME challenge, redirect)"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "HTTPS"
+          }
+        ],
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "-1",
+            "CidrIp": "0.0.0.0/0"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${App}-${Env}-web"
+            }
+          }
+        ]
+      }
+    },
+    "PhpRepository": {
+      "Type": "AWS::ECR::Repository",
+      "Properties": {
+        "RepositoryName": {
+          "Fn::Sub": "${App}-${Env}-php"
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true
+        },
+        "EmptyOnDelete": true,
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{\"rules\": [{\"rulePriority\": 1, \"description\": \"Keep the newest 20 images\", \"selection\": {\"tagStatus\": \"any\", \"countType\": \"imageCountMoreThan\", \"countNumber\": 20}, \"action\": {\"type\": \"expire\"}}]}"
+        }
+      }
+    },
+    "NginxRepository": {
+      "Type": "AWS::ECR::Repository",
+      "Properties": {
+        "RepositoryName": {
+          "Fn::Sub": "${App}-${Env}-nginx"
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true
+        },
+        "EmptyOnDelete": true,
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{\"rules\": [{\"rulePriority\": 1, \"description\": \"Keep the newest 20 images\", \"selection\": {\"tagStatus\": \"any\", \"countType\": \"imageCountMoreThan\", \"countNumber\": 20}, \"action\": {\"type\": \"expire\"}}]}"
+        }
+      }
+    },
+    "ArtifactBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "OwnershipControls": {
+          "Rules": [
+            {
+              "ObjectOwnership": "BucketOwnerEnforced"
+            }
+          ]
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "Id": "expire-old-artifacts",
+              "Status": "Enabled",
+              "ExpirationInDays": 30
+            }
+          ]
+        }
+      }
+    },
+    "ArtifactBucketPolicy": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "ArtifactBucket"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "TlsOnly",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "ArtifactBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": "${ArtifactBucket.Arn}/*"
+                }
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "BuildLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/codebuild/${App}-${Env}"
+        },
+        "RetentionInDays": {
+          "Ref": "LogRetentionDays"
+        }
+      }
+    },
+    "BuildRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${App}-${Env}-build"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "codebuild.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "build",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Logs",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "${BuildLogGroup.Arn}"
+                  }
+                },
+                {
+                  "Sid": "Artifacts",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:GetObjectVersion",
+                    "s3:PutObject"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "${ArtifactBucket.Arn}/*"
+                  }
+                },
+                {
+                  "Sid": "EcrLogin",
+                  "Effect": "Allow",
+                  "Action": "ecr:GetAuthorizationToken",
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "EcrImages",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:BatchGetImage",
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:DescribeImages",
+                    "ecr:InitiateLayerUpload",
+                    "ecr:UploadLayerPart",
+                    "ecr:CompleteLayerUpload",
+                    "ecr:PutImage"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "PhpRepository",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "NginxRepository",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Sid": "ComposerAuth",
+                  "Effect": "Allow",
+                  "Action": "ssm:GetParameter",
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${App}/${Env}/composer_auth"
+                  }
+                },
+                {
+                  "Sid": "DecryptSecrets",
+                  "Effect": "Allow",
+                  "Action": "kms:Decrypt",
+                  "Resource": "*",
+                  "Condition": {
+                    "StringEquals": {
+                      "kms:ViaService": {
+                        "Fn::Sub": "ssm.${AWS::Region}.amazonaws.com"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "BuildProject": {
+      "Type": "AWS::CodeBuild::Project",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${App}-${Env}"
+        },
+        "ServiceRole": {
+          "Fn::GetAtt": [
+            "BuildRole",
+            "Arn"
+          ]
+        },
+        "TimeoutInMinutes": 60,
+        "Source": {
+          "Type": "CODEPIPELINE",
+          "BuildSpec": "deploy/buildspec.yml"
+        },
+        "Artifacts": {
+          "Type": "CODEPIPELINE"
+        },
+        "Environment": {
+          "Type": "LINUX_CONTAINER",
+          "ComputeType": "BUILD_GENERAL1_MEDIUM",
+          "Image": "aws/codebuild/standard:7.0",
+          "PrivilegedMode": true,
+          "EnvironmentVariables": [
+            {
+              "Name": "APP_NAME",
+              "Value": {
+                "Ref": "App"
+              }
+            },
+            {
+              "Name": "ENV_NAME",
+              "Value": {
+                "Ref": "Env"
+              }
+            },
+            {
+              "Name": "COMPOSER_AUTH_PARAM",
+              "Value": {
+                "Fn::Sub": "/${App}/${Env}/composer_auth"
+              }
+            },
+            {
+              "Name": "STATIC_LOCALES",
+              "Value": {
+                "Ref": "StaticLocales"
+              }
+            }
+          ]
+        },
+        "LogsConfig": {
+          "CloudWatchLogs": {
+            "Status": "ENABLED",
+            "GroupName": {
+              "Ref": "BuildLogGroup"
+            }
+          }
+        }
+      }
+    },
+    "DeployRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${App}-${Env}-deploy"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "codedeploy.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSCodeDeployRole"
+          }
+        ]
+      }
+    },
+    "DeployApplication": {
+      "Type": "AWS::CodeDeploy::Application",
+      "Properties": {
+        "ApplicationName": {
+          "Fn::Sub": "${App}-${Env}"
+        },
+        "ComputePlatform": "Server"
+      }
+    },
+    "DeploymentGroup": {
+      "Type": "AWS::CodeDeploy::DeploymentGroup",
+      "Properties": {
+        "ApplicationName": {
+          "Ref": "DeployApplication"
+        },
+        "DeploymentGroupName": {
+          "Fn::Sub": "${App}-${Env}"
+        },
+        "ServiceRoleArn": {
+          "Fn::GetAtt": [
+            "DeployRole",
+            "Arn"
+          ]
+        },
+        "DeploymentConfigName": "CodeDeployDefault.AllAtOnce",
+        "Ec2TagFilters": [
+          {
+            "Key": "Deploy",
+            "Value": {
+              "Fn::Sub": "${App}-${Env}"
+            },
+            "Type": "KEY_AND_VALUE"
+          }
+        ],
+        "AutoRollbackConfiguration": {
+          "Enabled": true,
+          "Events": [
+            "DEPLOYMENT_FAILURE"
+          ]
+        }
+      }
+    },
+    "PipelineRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${App}-${Env}-pipeline"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "codepipeline.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "pipeline",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Artifacts",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:GetObjectVersion",
+                    "s3:PutObject",
+                    "s3:GetBucketVersioning"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "ArtifactBucket",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::Sub": "${ArtifactBucket.Arn}/*"
+                    }
+                  ]
+                },
+                {
+                  "Sid": "GitHub",
+                  "Effect": "Allow",
+                  "Action": [
+                    "codestar-connections:UseConnection",
+                    "codeconnections:UseConnection"
+                  ],
+                  "Resource": {
+                    "Ref": "GithubConnectionArn"
+                  }
+                },
+                {
+                  "Sid": "Build",
+                  "Effect": "Allow",
+                  "Action": [
+                    "codebuild:StartBuild",
+                    "codebuild:BatchGetBuilds"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "BuildProject",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Sid": "Deploy",
+                  "Effect": "Allow",
+                  "Action": [
+                    "codedeploy:CreateDeployment",
+                    "codedeploy:GetApplication",
+                    "codedeploy:GetApplicationRevision",
+                    "codedeploy:GetDeployment",
+                    "codedeploy:GetDeploymentConfig",
+                    "codedeploy:RegisterApplicationRevision"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "Pipeline": {
+      "Type": "AWS::CodePipeline::Pipeline",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${App}-${Env}"
+        },
+        "RoleArn": {
+          "Fn::GetAtt": [
+            "PipelineRole",
+            "Arn"
+          ]
+        },
+        "PipelineType": "V2",
+        "ArtifactStore": {
+          "Type": "S3",
+          "Location": {
+            "Ref": "ArtifactBucket"
+          }
+        },
+        "Stages": [
+          {
+            "Name": "Source",
+            "Actions": [
+              {
+                "Name": "Source",
+                "ActionTypeId": {
+                  "Category": "Source",
+                  "Owner": "AWS",
+                  "Provider": "CodeStarSourceConnection",
+                  "Version": "1"
+                },
+                "Configuration": {
+                  "ConnectionArn": {
+                    "Ref": "GithubConnectionArn"
+                  },
+                  "FullRepositoryId": {
+                    "Ref": "GithubRepo"
+                  },
+                  "BranchName": {
+                    "Ref": "Branch"
+                  },
+                  "OutputArtifactFormat": "CODE_ZIP"
+                },
+                "OutputArtifacts": [
+                  {
+                    "Name": "source"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "Name": "Build",
+            "Actions": [
+              {
+                "Name": "Build",
+                "ActionTypeId": {
+                  "Category": "Build",
+                  "Owner": "AWS",
+                  "Provider": "CodeBuild",
+                  "Version": "1"
+                },
+                "Configuration": {
+                  "ProjectName": {
+                    "Ref": "BuildProject"
+                  }
+                },
+                "InputArtifacts": [
+                  {
+                    "Name": "source"
+                  }
+                ],
+                "OutputArtifacts": [
+                  {
+                    "Name": "release"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "Name": "Deploy",
+            "Actions": [
+              {
+                "Name": "Deploy",
+                "ActionTypeId": {
+                  "Category": "Deploy",
+                  "Owner": "AWS",
+                  "Provider": "CodeDeploy",
+                  "Version": "1"
+                },
+                "Configuration": {
+                  "ApplicationName": {
+                    "Ref": "DeployApplication"
+                  },
+                  "DeploymentGroupName": {
+                    "Ref": "DeploymentGroup"
+                  }
+                },
+                "InputArtifacts": [
+                  {
+                    "Name": "release"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "StatusParameter": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "/${App}/${Env}/status"
+        },
+        "Type": "String",
+        "Value": "{}",
+        "Description": "What runs on the box (written by the box after every deploy and repair; read by MageDevKit)."
+      }
+    },
+    "CommandsLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/${App}/${Env}/commands"
+        },
+        "RetentionInDays": {
+          "Ref": "LogRetentionDays"
+        }
+      }
+    },
+    "BoxDocument": {
+      "Type": "AWS::SSM::Document",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${App}-${Env}-box"
+        },
+        "DocumentType": "Command",
+        "UpdateMethod": "NewVersion",
+        "Content": {
+          "schemaVersion": "2.2",
+          "description": "MageDevKit: one allow-listed box command, run as the deploy user. Nothing else.",
+          "parameters": {
+            "command": {
+              "type": "String",
+              "allowedValues": [
+                "status",
+                "cache-flush",
+                "cache-clean",
+                "indexer-status",
+                "reindex",
+                "restart",
+                "maintenance",
+                "logs",
+                "composer-validate",
+                "composer-install",
+                "build",
+                "full-build",
+                "fix-ownership",
+                "refresh"
+              ]
+            },
+            "arg": {
+              "type": "String",
+              "default": "",
+              "allowedPattern": "^[A-Za-z0-9_.:/=+-]{0,300}$"
+            }
+          },
+          "mainSteps": [
+            {
+              "action": "aws:runShellScript",
+              "name": "box",
+              "inputs": {
+                "runCommand": [
+                  {
+                    "Fn::Sub": "sudo -iu deploy /opt/${App}/deploy/scripts/box {{command}} {{arg}}"
+                  }
+                ],
+                "timeoutSeconds": "7200"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "BoxRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${App}-${Env}-box"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+          },
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+          }
+        ],
+        "Policies": [
+          {
+            "PolicyName": "box",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Secrets",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ssm:GetParametersByPath",
+                    "ssm:GetParameter",
+                    "ssm:GetParameters"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${App}/${Env}"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${App}/${Env}/*"
+                    }
+                  ]
+                },
+                {
+                  "Sid": "DecryptSecrets",
+                  "Effect": "Allow",
+                  "Action": "kms:Decrypt",
+                  "Resource": "*",
+                  "Condition": {
+                    "StringEquals": {
+                      "kms:ViaService": {
+                        "Fn::Sub": "ssm.${AWS::Region}.amazonaws.com"
+                      }
+                    }
+                  }
+                },
+                {
+                  "Sid": "Status",
+                  "Effect": "Allow",
+                  "Action": "ssm:PutParameter",
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${App}/${Env}/status"
+                  }
+                },
+                {
+                  "Sid": "CommandOutput",
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogStreams"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "${CommandsLogGroup.Arn}"
+                    }
+                  ]
+                },
+                {
+                  "Sid": "Revisions",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:GetObjectVersion",
+                    "s3:ListBucket"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "ArtifactBucket",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::Sub": "${ArtifactBucket.Arn}/*"
+                    }
+                  ]
+                },
+                {
+                  "Fn::If": [
+                    "HasMedia",
+                    {
+                      "Sid": "Media",
+                      "Effect": "Allow",
+                      "Action": [
+                        "s3:GetObject",
+                        "s3:PutObject",
+                        "s3:DeleteObject",
+                        "s3:ListBucket",
+                        "s3:GetBucketLocation"
+                      ],
+                      "Resource": [
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:s3:::${MediaBucket}"
+                        },
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:s3:::${MediaBucket}/*"
+                        }
+                      ]
+                    },
+                    {
+                      "Ref": "AWS::NoValue"
+                    }
+                  ]
+                },
+                {
+                  "Fn::If": [
+                    "HasDumps",
+                    {
+                      "Sid": "Dumps",
+                      "Effect": "Allow",
+                      "Action": [
+                        "s3:GetObject",
+                        "s3:ListBucket"
+                      ],
+                      "Resource": [
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:s3:::${DumpBucket}"
+                        },
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:s3:::${DumpBucket}/*"
+                        }
+                      ]
+                    },
+                    {
+                      "Ref": "AWS::NoValue"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "BoxInstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "InstanceProfileName": {
+          "Fn::Sub": "${App}-${Env}-box"
+        },
+        "Roles": [
+          {
+            "Ref": "BoxRole"
+          }
+        ]
+      }
+    },
+    "BoxLaunchTemplate": {
+      "Type": "AWS::EC2::LaunchTemplate",
+      "Properties": {
+        "LaunchTemplateName": {
+          "Fn::Sub": "${App}-${Env}-box"
+        },
+        "LaunchTemplateData": {
+          "MetadataOptions": {
+            "HttpTokens": "required",
+            "HttpEndpoint": "enabled"
+          }
+        }
+      }
+    },
+    "Box": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Ref": "ImageId"
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "LaunchTemplate": {
+          "LaunchTemplateId": {
+            "Ref": "BoxLaunchTemplate"
+          },
+          "Version": {
+            "Fn::GetAtt": [
+              "BoxLaunchTemplate",
+              "LatestVersionNumber"
+            ]
+          }
+        },
+        "SubnetId": {
+          "Ref": "PublicSubnet"
+        },
+        "SecurityGroupIds": [
+          {
+            "Ref": "WebSecurityGroup"
+          }
+        ],
+        "IamInstanceProfile": {
+          "Ref": "BoxInstanceProfile"
+        },
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/sda1",
+            "Ebs": {
+              "VolumeSize": {
+                "Ref": "VolumeGb"
+              },
+              "VolumeType": "gp3",
+              "Encrypted": true,
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Sub": "#!/bin/bash\n# First boot of the box (MageDevKit pipeline kit): Docker, the AWS CLI, the\n# CodeDeploy agent, a 4 GB swap file, the deploy user and /opt/${App}. Runs\n# once; later changes come through deploys.\nset -euxo pipefail\nexport DEBIAN_FRONTEND=noninteractive\napt-get update\napt-get install -y docker.io docker-compose-v2 rsync unzip curl jq gzip ruby-full wget python3\ncurl -fsSL -o /tmp/awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\nunzip -q /tmp/awscliv2.zip -d /tmp\n/tmp/aws/install --update\nwget -q -O /tmp/codedeploy-install https://aws-codedeploy-${AWS::Region}.s3.${AWS::Region}.amazonaws.com/latest/install\nchmod +x /tmp/codedeploy-install\n/tmp/codedeploy-install auto\nsystemctl enable --now codedeploy-agent\nif [ ! -f /swapfile ]; then\n  fallocate -l 4G /swapfile\n  chmod 600 /swapfile\n  mkswap /swapfile\n  swapon /swapfile\n  echo '/swapfile none swap sw 0 0' >> /etc/fstab\nfi\nsysctl -w vm.max_map_count=262144\necho 'vm.max_map_count=262144' > /etc/sysctl.d/99-opensearch.conf\nid deploy >/dev/null 2>&1 || useradd --create-home --shell /bin/bash deploy\nusermod -aG docker deploy\nmkdir -p /opt/${App}/magento /opt/${App}/deploy /opt/${App}/shared /opt/${App}/incoming\nchown -R deploy:deploy /opt/${App}\ncat > /etc/m2deploy.env <<CONF\nAPP=${App}\nENV_NAME=${Env}\nAWS_REGION=${AWS::Region}\nAPP_HOME=/opt/${App}\nCONF\nchmod 644 /etc/m2deploy.env\n"
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${App}-${Env}"
+            }
+          },
+          {
+            "Key": "Deploy",
+            "Value": {
+              "Fn::Sub": "${App}-${Env}"
+            }
+          }
+        ]
+      }
+    },
+    "BoxEip": {
+      "Type": "AWS::EC2::EIP",
+      "DependsOn": "GatewayAttachment",
+      "Properties": {
+        "Domain": "vpc",
+        "InstanceId": {
+          "Ref": "Box"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${App}-${Env}"
+            }
+          }
+        ]
+      }
+    },
+    "StoreRecord": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "HostedZoneId": {
+          "Ref": "HostedZoneId"
+        },
+        "Name": {
+          "Ref": "Domain"
+        },
+        "Type": "A",
+        "TTL": "300",
+        "ResourceRecords": [
+          {
+            "Ref": "BoxEip"
+          }
+        ]
+      }
+    },
+    "SchedulerRole": {
+      "Type": "AWS::IAM::Role",
+      "Condition": "StopOffHours",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${App}-${Env}-scheduler"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "scheduler.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "scheduler",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "StartStop",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:StartInstances",
+                    "ec2:StopInstances"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Box}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "StopSchedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Condition": "StopOffHours",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${App}-${Env}-stop"
+        },
+        "ScheduleExpression": "cron(0 20 ? * MON-FRI *)",
+        "ScheduleExpressionTimezone": {
+          "Ref": "Timezone"
+        },
+        "FlexibleTimeWindow": {
+          "Mode": "OFF"
+        },
+        "Target": {
+          "Arn": "arn:aws:scheduler:::aws-sdk:ec2:stopInstances",
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "SchedulerRole",
+              "Arn"
+            ]
+          },
+          "Input": {
+            "Fn::Sub": "{\"InstanceIds\": [\"${Box}\"]}"
+          }
+        }
+      }
+    },
+    "StartSchedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Condition": "StopOffHours",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${App}-${Env}-start"
+        },
+        "ScheduleExpression": "cron(0 7 ? * MON-FRI *)",
+        "ScheduleExpressionTimezone": {
+          "Ref": "Timezone"
+        },
+        "FlexibleTimeWindow": {
+          "Mode": "OFF"
+        },
+        "Target": {
+          "Arn": "arn:aws:scheduler:::aws-sdk:ec2:startInstances",
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "SchedulerRole",
+              "Arn"
+            ]
+          },
+          "Input": {
+            "Fn::Sub": "{\"InstanceIds\": [\"${Box}\"]}"
+          }
+        }
+      }
+    },
+    "OperatorPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "ManagedPolicyName": {
+          "Fn::Sub": "${App}-${Env}-operator"
+        },
+        "Description": "Day-to-day work on this environment from MageDevKit: start/stop the box, run the pipeline, read builds, deploys and logs, and run the allow-listed box commands. No IAM, no shell.",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "Box",
+              "Effect": "Allow",
+              "Action": [
+                "ec2:StartInstances",
+                "ec2:StopInstances"
+              ],
+              "Resource": {
+                "Fn::Sub": "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Box}"
+              }
+            },
+            {
+              "Sid": "Describe",
+              "Effect": "Allow",
+              "Action": [
+                "ec2:DescribeInstances",
+                "ec2:DescribeInstanceStatus",
+                "ssm:DescribeInstanceInformation",
+                "ssm:ListCommands",
+                "ssm:ListCommandInvocations",
+                "ssm:GetCommandInvocation"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "Pipeline",
+              "Effect": "Allow",
+              "Action": [
+                "codepipeline:StartPipelineExecution",
+                "codepipeline:StopPipelineExecution",
+                "codepipeline:RetryStageExecution",
+                "codepipeline:GetPipeline",
+                "codepipeline:GetPipelineState",
+                "codepipeline:GetPipelineExecution",
+                "codepipeline:ListPipelineExecutions",
+                "codepipeline:ListActionExecutions"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}"
+                },
+                {
+                  "Fn::Sub": "arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}/*"
+                }
+              ]
+            },
+            {
+              "Sid": "Builds",
+              "Effect": "Allow",
+              "Action": [
+                "codebuild:BatchGetBuilds",
+                "codebuild:ListBuildsForProject"
+              ],
+              "Resource": {
+                "Fn::GetAtt": [
+                  "BuildProject",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Sid": "Deploys",
+              "Effect": "Allow",
+              "Action": [
+                "codedeploy:GetApplication",
+                "codedeploy:GetDeploymentGroup",
+                "codedeploy:ListDeployments",
+                "codedeploy:GetDeployment",
+                "codedeploy:BatchGetDeployments",
+                "codedeploy:ListDeploymentInstances",
+                "codedeploy:GetDeploymentInstance",
+                "codedeploy:ListDeploymentTargets",
+                "codedeploy:BatchGetDeploymentTargets",
+                "codedeploy:GetDeploymentTarget",
+                "codedeploy:ListApplicationRevisions",
+                "codedeploy:GetApplicationRevision",
+                "codedeploy:CreateDeployment",
+                "codedeploy:StopDeployment",
+                "codedeploy:GetDeploymentConfig"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:application:${DeployApplication}"
+                },
+                {
+                  "Fn::Sub": "arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:${DeployApplication}/${DeploymentGroup}"
+                },
+                {
+                  "Fn::Sub": "arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentconfig:*"
+                }
+              ]
+            },
+            {
+              "Sid": "Logs",
+              "Effect": "Allow",
+              "Action": [
+                "logs:GetLogEvents",
+                "logs:FilterLogEvents",
+                "logs:DescribeLogStreams"
+              ],
+              "Resource": [
+                {
+                  "Fn::Sub": "${BuildLogGroup.Arn}"
+                },
+                {
+                  "Fn::Sub": "${CommandsLogGroup.Arn}"
+                }
+              ]
+            },
+            {
+              "Sid": "Artifacts",
+              "Effect": "Allow",
+              "Action": [
+                "s3:ListBucket",
+                "s3:GetObject",
+                "s3:GetObjectVersion"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "ArtifactBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": "${ArtifactBucket.Arn}/*"
+                }
+              ]
+            },
+            {
+              "Fn::If": [
+                "HasDumps",
+                {
+                  "Sid": "Dumps",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:ListBucket",
+                    "s3:GetObject"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:s3:::${DumpBucket}"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:s3:::${DumpBucket}/*"
+                    }
+                  ]
+                },
+                {
+                  "Ref": "AWS::NoValue"
+                }
+              ]
+            },
+            {
+              "Fn::If": [
+                "HasDumps",
+                {
+                  "Sid": "DumpUploads",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:PutObject",
+                    "s3:DeleteObject"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:s3:::${DumpBucket}/uploads/*"
+                  }
+                },
+                {
+                  "Ref": "AWS::NoValue"
+                }
+              ]
+            },
+            {
+              "Sid": "Images",
+              "Effect": "Allow",
+              "Action": [
+                "ecr:DescribeImages",
+                "ecr:ListImages",
+                "ecr:DescribeRepositories"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "PhpRepository",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::GetAtt": [
+                    "NginxRepository",
+                    "Arn"
+                  ]
+                }
+              ]
+            },
+            {
+              "Sid": "BoxCommands",
+              "Effect": "Allow",
+              "Action": "ssm:SendCommand",
+              "Resource": [
+                {
+                  "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/${BoxDocument}"
+                },
+                {
+                  "Fn::Sub": "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Box}"
+                }
+              ]
+            },
+            {
+              "Sid": "CancelCommands",
+              "Effect": "Allow",
+              "Action": "ssm:CancelCommand",
+              "Resource": "*"
+            },
+            {
+              "Sid": "Status",
+              "Effect": "Allow",
+              "Action": "ssm:GetParameter",
+              "Resource": {
+                "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${App}/${Env}/status"
+              }
+            },
+            {
+              "Sid": "Stack",
+              "Effect": "Allow",
+              "Action": [
+                "cloudformation:DescribeStacks",
+                "cloudformation:DescribeStackEvents",
+                "cloudformation:ListStackResources"
+              ],
+              "Resource": {
+                "Ref": "AWS::StackId"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "InstanceId": {
+      "Value": {
+        "Ref": "Box"
+      }
+    },
+    "PublicIp": {
+      "Value": {
+        "Ref": "BoxEip"
+      }
+    },
+    "Url": {
+      "Value": {
+        "Fn::Sub": "https://${Domain}/"
+      }
+    },
+    "PipelineName": {
+      "Value": {
+        "Ref": "Pipeline"
+      }
+    },
+    "BuildProject": {
+      "Value": {
+        "Ref": "BuildProject"
+      }
+    },
+    "CodeDeployApp": {
+      "Value": {
+        "Ref": "DeployApplication"
+      }
+    },
+    "DeploymentGroup": {
+      "Value": {
+        "Ref": "DeploymentGroup"
+      }
+    },
+    "ArtifactBucket": {
+      "Value": {
+        "Ref": "ArtifactBucket"
+      }
+    },
+    "OperatorPolicyArn": {
+      "Value": {
+        "Ref": "OperatorPolicy"
+      }
+    },
+    "BoxDocument": {
+      "Value": {
+        "Ref": "BoxDocument"
+      }
+    },
+    "CommandsLogGroup": {
+      "Value": {
+        "Ref": "CommandsLogGroup"
+      }
+    },
+    "BuildLogGroup": {
+      "Value": {
+        "Ref": "BuildLogGroup"
+      }
+    }
+  }
+}

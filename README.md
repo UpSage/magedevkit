@@ -115,8 +115,10 @@ magedevkit/
 │       │                       itself by dump-config.py
 │       ├── git-repo.sh         Per-repo git identity and saved login for magento/ (the identity
 │       │                       from the GitHub account: github-identity.py)
-│       ├── aws-storage.sh tools.sh terraform.sh   S3 setup; verified installs of mkcert,
-│       │                       direnv, the AWS CLI and Terraform; keys/ (AWS CLI signing key)
+│       ├── aws-storage.sh tools.sh   S3 setup; verified installs of mkcert, direnv and the
+│       │                       AWS CLI; keys/ (AWS CLI signing key)
+│       ├── aws.sh aws-credentials.py aws-profiles.py   MageDevKit's own AWS connections (mdk aws)
+│       ├── cfn-check.py secret-scan.py   the pipeline kit's template check; no credentials in a commit
 │       └── web-wizard/         The browser wizard (server.py) and the dashboard (dashboard.py,
 │                               envs, ops, locks, oplogs, destroy, gitrepo, pipeline, webcore),
 │                               ui/ = the pages (kit.js, app.js, dash-*.js, wizard.css)
@@ -402,16 +404,26 @@ writes the kit into the repo; you push it with the store.
 next time):
 
 - the environment name (`dev`, `staging`, …) and the store hostname
-- the AWS profile, region and hosted zone (picked from your AWS account when the profile works)
+- which of MageDevKit's AWS connections (`mdk aws`) reaches the account, the region and the hosted
+  zone (picked from AWS when the connection works). The kit records the account number, never a
+  connection name
 - the instance size, the branch that deploys, and the GitHub connection
 - the Magento mode, and whether to stop the box outside working hours
+- whether it is **production**. Anything else runs on a copy of live data, so the box locks outgoing
+  email off, asks search engines not to index it, and puts PayPal and Braintree in sandbox mode
+- optionally, an S3 bucket of database dumps the box may load
+
+The box's Ubuntu image is looked up once and then kept: a different image would replace the box,
+and its database with it.
 
 **What it writes:**
 
 | Path | What |
 |---|---|
 | `magento/.platform/stack.env` | the version pins: the same values as the instance's `.env` |
-| `magento/deploy/` | `buildspec.yml`, `appspec.yml`, the deploy scripts, the box's compose files, the php/nginx images and service config (copied from this repo, so local and deployed match), and `infra/` (Terraform for the AWS side) |
+| `magento/deploy/` | `buildspec.yml`, `appspec.yml`, the deploy scripts, the box's compose files, the php/nginx images and service config (copied from this repo, so local and deployed match) |
+| `magento/deploy/infra/` | `stack.json`, a CloudFormation template for the AWS side (one stack per environment), and `<env>.params.json` with that environment's values. No secrets: those go to SSM, written by the provision wizard |
+| `magento/deploy/targets/` | `<env>.env` (settings) and `<env>.config-overrides.php`, written once and then yours: your own `env.php` additions for that environment, such as switching off an ERP connector |
 | `magento/deploy/pipeline.json` | the kit version, the targets and a checksum of every file it wrote |
 
 It also removes the old hand-made root `buildspec.yml`, `appspec.yml` and `scripts/*.sh` if they
@@ -421,8 +433,11 @@ exist.
 
 - `bash -n` on every script
 - `docker compose config` on the box's stack
-- `terraform fmt` and `terraform validate`, using a pinned Terraform it downloads to
-  `~/.cache/platform-terraform` if needed
+- the CloudFormation template (`bin/lib/cfn-check.py`): every reference, parameter and resource
+  type, and its size; `cfn-lint` too when it is installed, and AWS's own `validate-template` when
+  a connection works (read-only)
+- every file it is about to commit, for anything that looks like a credential
+  (`bin/lib/secret-scan.py`)
 - optionally, a release build exactly like CodeBuild's: the php image, `composer --no-dev`, DI
   compile and static content
 
@@ -432,6 +447,8 @@ It then commits on a new local branch, `pipeline/<env>-<date>`, and never pushes
 
 - It updates files it wrote earlier.
 - A file someone changed by hand is reported and kept, unless you choose to replace it.
+- A file an older kit wrote and this one no longer has (the Terraform of kit 2) is removed if it
+  is still as generated, and reported and kept if someone edited it.
 - Another environment name adds a target, and the other targets' files stay.
 
 The dashboard's **Pipeline** tab shows, for each instance:
@@ -916,8 +933,9 @@ Three layers, each with one job:
 - Git is per repo: commit identity in `magento/.git/config`, a remembered login in
   `magento/.git/credentials` (`bin/lib/git-repo.sh`, `gitrepo.py`). Nothing writes the global git
   config.
-- Tools downloaded for you are verified first: pinned SHA-256 for mkcert, direnv, Tailwind and
-  Terraform; AWS's PGP signature (`bin/lib/keys/aws-cli.asc`) for the AWS CLI.
+- Tools downloaded for you are verified first: pinned SHA-256 for mkcert, direnv and Tailwind;
+  AWS's PGP signature (`bin/lib/keys/aws-cli.asc`) for the AWS CLI. Optional tools (`cfn-lint`)
+  are used when present and never installed for you.
 - `fail` (an error, exit 1) and `cancel` (the user said no, exit 130, shown as *Cancelled*) are the
   only ways a flow stops. Errors go to stderr.
 - A function relied on to stop at its first error must not be run in an `if`/`&&`/`||` context,

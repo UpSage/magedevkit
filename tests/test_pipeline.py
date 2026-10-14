@@ -3,8 +3,10 @@ real against a throwaway instance whose magento/ is a small git repo, answers
 given through PRESET_PIPELINE_*; plus the dashboard's readiness probe
 (bin/lib/web-wizard/pipeline.py) on the result. No AWS: the AWS CLI finds no
 config, so every lookup falls back to the preset answers. Terraform isn't run
-(PIPELINE_SKIP_TERRAFORM=1) — the generated infra is validated by hand."""
+The CloudFormation template is checked offline by bin/lib/cfn-check.py."""
 
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -16,6 +18,7 @@ import helpers
 import envs
 import pipeline
 
+CFN_CHECK = os.path.join(helpers.REPO, "bin", "lib", "cfn-check.py")
 PINS = ("PHP_VERSION=8.4\nMARIADB_VERSION=12.3\nOPENSEARCH_VERSION=3\nVALKEY_VERSION=9\nRABBITMQ_VERSION=4.3\n"
         "VARNISH_VERSION=8\nNGINX_VERSION=1.30\nCOMPOSER_VERSION=2.10\nDEBIAN_RELEASE=trixie\nMAGENTO_VERSION=2.4.9\n")
 
@@ -27,7 +30,9 @@ PRESETS = {
     "PRESET_PIPELINE_GITHUB_REPO": "Acme/shop",
     "PRESET_PIPELINE_GITHUB_CONNECTION": "arn:aws:codestar-connections:us-east-2:123456789012:connection/abc-123",
     "PRESET_PIPELINE_MODE": "production", "PRESET_PIPELINE_ACME_EMAIL": "ops@shop.test",
-    "PRESET_PIPELINE_STATIC_LOCALES": "en_US", "PRESET_PIPELINE_TF_STATE_BUCKET": "shop-tfstate-test",
+    "PRESET_PIPELINE_STATIC_LOCALES": "en_US", "PRESET_PIPELINE_ZONE_ID": "Z0123456789ABCDEFGHIJ",
+    "PRESET_PIPELINE_IMAGE_ID": "ami-0123456789abcdef0", "PRESET_PIPELINE_PRODUCTION": "no",
+    "PRESET_PIPELINE_DUMP_BUCKET": "shop-dumps",
     "PRESET_PIPELINE_COMMIT": "yes", "PRESET_PIPELINE_BUILD_TEST": "no", "PRESET_PIPELINE_REMOVE_OLD": "yes",
 }
 
@@ -57,7 +62,7 @@ class PipelineWizard(unittest.TestCase):
         git(self.mdir, "remote", "add", "origin", "https://github.com/Acme/shop.git")
         git(self.mdir, "add", "-A")
         git(self.mdir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "store")
-        self.env = dict(os.environ, PLATFORM_INSTANCE_DIR=self.inst, PIPELINE_SKIP_TERRAFORM="1",
+        self.env = dict(os.environ, PLATFORM_INSTANCE_DIR=self.inst,
                         XDG_CONFIG_HOME=os.path.join(self.tmp, "config"),  # no MageDevKit AWS connections
                         AWS_CONFIG_FILE=os.path.join(self.tmp, "none"),
                         AWS_SHARED_CREDENTIALS_FILE=os.path.join(self.tmp, "none"),
@@ -86,7 +91,8 @@ class PipelineWizard(unittest.TestCase):
         d = self.mdir
         for rel in ("deploy/pipeline.json", "deploy/buildspec.yml", "deploy/appspec.yml", "deploy/compose/app.yml",
                     "deploy/docker/php/Dockerfile", "deploy/config/nginx/magento-backend.conf",
-                    "deploy/infra/envs/dev/terraform.tfvars", "deploy/targets/dev.env", ".platform/stack.env"):
+                    "deploy/infra/stack.json", "deploy/infra/dev.params.json", "deploy/targets/dev.env",
+                    "deploy/targets/dev.config-overrides.php", ".platform/stack.env"):
             self.assertTrue(os.path.isfile(os.path.join(d, rel)), rel)
         self.assertTrue(os.access(os.path.join(d, "deploy/scripts/box"), os.X_OK))
         target = helpers.read_json(os.path.join(d, "deploy/pipeline.json"))["targets"]["dev"]
@@ -96,6 +102,13 @@ class PipelineWizard(unittest.TestCase):
             target = f.read()
         self.assertIn("APP_DOMAIN=dev.shop.test", target)
         self.assertIn("ADMIN_URI=backend", target)
+        self.assertIn("PRODUCTION=no", target)
+        self.assertIn("DUMP_BUCKET=shop-dumps", target)
+        self.assertEqual(subprocess.run(["find", os.path.join(d, "deploy"), "-name", "*.tf"], capture_output=True,
+                                        text=True).stdout, "")  # no Terraform left
+        check = subprocess.run(["python3", CFN_CHECK, os.path.join(d, "deploy/infra/stack.json"),
+                                os.path.join(d, "deploy/infra/dev.params.json")], capture_output=True, text=True)
+        self.assertEqual(check.returncode, 0, check.stdout)
         with open(os.path.join(d, "deploy/appspec.yml")) as f:
             self.assertIn("destination: /opt/shop/incoming", f.read())
         with open(os.path.join(d, "deploy/config/nginx/magento-backend.conf")) as f:
@@ -152,10 +165,47 @@ class PipelineWizard(unittest.TestCase):
                             PRESET_PIPELINE_BRANCH="staging")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertTrue(os.path.isfile(os.path.join(d, "deploy/targets/dev.env")))
-        self.assertTrue(os.path.isfile(os.path.join(d, "deploy/infra/envs/staging/terraform.tfvars")))
+        self.assertTrue(os.path.isfile(os.path.join(d, "deploy/infra/dev.params.json")))
+        self.assertTrue(os.path.isfile(os.path.join(d, "deploy/infra/staging.params.json")))
         i = self.info()
         self.assertEqual([t["env"] for t in i["targets"]], ["dev", "staging"])
         self.assertEqual(i["status"], "current")
+
+    def test_upgrade_retires_old_files_and_keeps_overrides(self):
+        self.assertEqual(self.run_wizard().returncode, 0)
+        d = self.mdir
+        # A kit-v2 leftover: one Terraform file as generated, one edited by hand.
+        manifest_path = os.path.join(d, "deploy/pipeline.json")
+        m = helpers.read_json(manifest_path)
+        for rel, text, recorded in (("deploy/infra/envs/dev/main.tf", "terraform {}\n", "terraform {}\n"),
+                                    ("deploy/infra/modules/ecr/main.tf", "# mine\n", "original\n")):
+            helpers.write(os.path.join(d, rel), text)
+            m["files"][rel] = hashlib.sha256(recorded.encode()).hexdigest()
+        with open(manifest_path, "w") as f:
+            json.dump(m, f, indent=2)
+        overrides = os.path.join(d, "deploy/targets/dev.config-overrides.php")
+        with open(overrides, "a") as f:
+            f.write("// my ERP is off\n")
+        git(d, "add", "-A")
+        git(d, "commit", "-qm", "v2 leftovers")
+        p = self.run_wizard()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        tracked = git(d, "ls-files").splitlines()
+        self.assertNotIn("deploy/infra/envs/dev/main.tf", tracked)   # as generated: removed
+        self.assertIn("deploy/infra/modules/ecr/main.tf", tracked)    # edited: kept and reported
+        self.assertIn("edited by hand (kept", p.stdout)
+        with open(overrides) as f:
+            self.assertIn("// my ERP is off", f.read())               # seed-once: never rewritten
+        self.assertNotIn("deploy/targets/dev.config-overrides.php", helpers.read_json(manifest_path)["files"])
+        self.assertEqual(self.info()["status"], "current")
+
+    def test_production_flag(self):
+        p = self.run_wizard(PRESET_PIPELINE_ENV="prod", PRESET_PIPELINE_DOMAIN="www.shop.test",
+                            PRESET_PIPELINE_PRODUCTION="yes")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        with open(os.path.join(self.mdir, "deploy/targets/prod.env")) as f:
+            self.assertIn("PRODUCTION=yes", f.read())
+        self.assertEqual(helpers.read_json(os.path.join(self.mdir, "deploy/pipeline.json"))["targets"]["prod"]["production"], "yes")
 
     def test_refuses_secrets_in_git(self):
         helpers.write(os.path.join(self.mdir, "app", "etc", "env.php"), "<?php return [];\n")

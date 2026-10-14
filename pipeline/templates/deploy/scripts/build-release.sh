@@ -20,6 +20,7 @@ SOURCE_DIR="$(pwd)"
 OUTPUT_DIR=""
 IMAGE_TAG="${IMAGE_TAG:-}"
 ECR_REGISTRY="${ECR_REGISTRY:-}"
+ECR_PREFIX="${ECR_PREFIX:-}"   # <app>-<env>: the box pulls $ECR_REGISTRY/$ECR_PREFIX-php|nginx
 STATIC_LOCALES="${STATIC_LOCALES:-en_US}"
 BUILD_JOBS="${BUILD_JOBS:-$(nproc 2>/dev/null || echo 1)}"
 
@@ -60,7 +61,7 @@ rsync -a \
     --exclude='/.git/' --exclude='/.build/' --exclude='/app/etc/env.php*' --exclude='/app/etc/platform/' \
     --exclude='/auth.json' --exclude='/vendor/' --exclude='/generated/' --exclude='/var/' \
     --exclude='/pub/static/' --exclude='/pub/media/' --exclude='node_modules/' \
-    --exclude='/deploy/infra/' --exclude='*.tfstate*' --exclude='.terraform/' \
+    --exclude='/deploy/infra/' \
     "$SOURCE_DIR/" "$WORKSPACE/"
 cd "$WORKSPACE"
 
@@ -102,6 +103,7 @@ chmod +x "$RELEASE_DIR"/deploy/scripts/render-env "$RELEASE_DIR"/deploy/scripts/
     "$RELEASE_DIR"/deploy/scripts/box "$RELEASE_DIR"/deploy/scripts/hooks/*.sh
 cat > "$RELEASE_DIR/release.env" <<EOF
 ECR_REGISTRY=$ECR_REGISTRY
+ECR_PREFIX=$ECR_PREFIX
 IMAGE_TAG=$IMAGE_TAG
 COMMIT=$COMMIT
 BUILT_AT=$(date -u +%FT%TZ)

@@ -1,19 +1,32 @@
 #!/usr/bin/env bash
 # @@HEADER@@
 #
-# Operator commands on the EC2 box (run as the deploy user, e.g. over SSM
-# Session Manager: sudo -iu deploy). These are also the only actions a
-# deploy dashboard may call — nothing here edits code.
+# Operator commands on the EC2 box, run as the deploy user. MageDevKit runs
+# them through this environment's own SSM document (<app>-<env>-box, see
+# deploy/infra/stack.json), which allows only the commands below and one
+# plain argument — never a shell. By hand: SSM Session Manager, then
+# `sudo -iu deploy`.
 #
-#   box status                     containers, release, health
-#   box compose <args>             docker compose for this stack
-#   box magento <args>             bin/magento in the php container
+# Changes made here are repairs on the live release: the next deploy replaces
+# them. Each one is recorded in shared/deploys.jsonl.
+#
+#   box status [--json]             containers, release, health
+#   box cache-flush | cache-clean   Magento caches (+ Varnish for a flush)
+#   box indexer-status
+#   box reindex [indexer]
+#   box restart <service>           php, nginx, varnish, cron, mariadb, opensearch, valkey, rabbitmq, traefik
 #   box maintenance on|off
-#   box cache-flush                Magento caches + Varnish
-#   box reindex [indexer…]
-#   box restart <service>          php, nginx, varnish, cron, …
-#   box seed-db <s3://…|file>      load a .sql.gz into the (empty) database
-#   box rollback                   start a CodeDeploy redeploy of the previous release
+#   box logs <service|magento-system|magento-exception>   the last 300 lines
+#   box composer-validate
+#   box composer-install            composer install (no dev) + DI compile — a repair
+#   box build                       setup:upgrade, DI compile, static content, cache — a repair
+#   box full-build                  composer-install + build + reindex — a repair
+#   box fix-ownership               var/, generated/, pub/static, pub/media back to the deploy user
+#   box refresh <s3://bucket/key.sql.gz>   replace the database (a dump first), then
+#                                   setup:upgrade, reindex and caches
+#
+# Not reachable through SSM, for a shell on the box only:
+#   box compose <args> | box magento <args> | box seed-db <s3://…|file> | box rollback
 
 LOG_TAG=box
 # shellcheck disable=SC1091
@@ -28,63 +41,198 @@ cmd="${1:-}"
 shift
 load_box_env
 
+SERVICES="php nginx varnish cron mariadb opensearch valkey rabbitmq traefik"
+ARG="${1:-}"
+
+# box_lock NAME — one change at a time on the box (the deploy lock: a deploy
+# waits for this, and this waits for a deploy).
+box_lock() {
+    # shellcheck disable=SC1091
+    source "$DEPLOY_DIR/scripts/lib/deploy-lock.sh"
+    APPLICATION_NAME=box DEPLOYMENT_ID="$1-$$"
+    export APPLICATION_NAME DEPLOYMENT_ID
+    deploy_lock_acquire
+    trap deploy_lock_release EXIT
+}
+
+maintenance_on() { box_magento maintenance:enable >/dev/null; }
+maintenance_off() { box_magento maintenance:disable >/dev/null; }
+
+# The repo.magento.com key, from SSM into the php container's environment by
+# name — never on a command line, never printed.
+composer_install() {
+    local auth
+    auth="$(aws ssm get-parameter --region "$AWS_REGION" --name "/$APP/$ENV_NAME/composer_auth" --with-decryption \
+        --query Parameter.Value --output text)" || fail "couldn't read /$APP/$ENV_NAME/composer_auth from SSM."
+    COMPOSER_AUTH="$auth" box_compose exec -T -e COMPOSER_AUTH php \
+        composer install --no-dev --no-interaction --optimize-autoloader
+    box_magento setup:di:compile
+}
+
+build() {
+    local locales
+    locales="$(target_setting STATIC_LOCALES)"
+    box_magento setup:upgrade --keep-generated
+    box_magento setup:di:compile
+    # shellcheck disable=SC2086
+    box_magento setup:static-content:deploy -f --jobs "$(nproc)" ${locales:-en_US}
+    box_magento cache:flush
+}
+
+ban_varnish() { box_compose exec -T varnish varnishadm 'ban req.url ~ .' >/dev/null || true; }
+
+# repair NAME FN — FN under the lock and in maintenance mode, then recorded.
+repair() {
+    local name="$1" rc=0
+    shift
+    box_lock "$name"
+    maintenance_on
+    ( "$@" ) || rc=$?
+    maintenance_off || true
+    ban_varnish
+    if [ "$rc" = 0 ]; then
+        record_event repair "$name"
+        publish_status ok
+        log "✓ $name done — a repair on the live release; the next deploy replaces it."
+    else
+        publish_status failed
+        fail "$name failed (exit $rc). The store is out of maintenance mode again."
+    fi
+}
+
+seed_db() {  # $1 = s3://… or a local .sql.gz
+    local src="$1" file="$1"
+    if [[ "$src" == s3://* ]]; then
+        file="$BACKUP_DIR/seed-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+        mkdir -p "$BACKUP_DIR"
+        log "Downloading $src"
+        aws s3 cp --only-show-errors "$src" "$file"
+    fi
+    gzip -t "$file" || fail "$file isn't a valid .gz file."
+    box_compose up -d mariadb
+    wait_for_healthy 180 || fail "mariadb isn't healthy."
+    log "Importing $file into the database (replaces its contents)"
+    # shellcheck disable=SC2016
+    box_compose exec -T mariadb sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" -e "DROP DATABASE IF EXISTS \`$MARIADB_DATABASE\`; CREATE DATABASE \`$MARIADB_DATABASE\`; GRANT ALL ON \`$MARIADB_DATABASE\`.* TO \"$MARIADB_USER\"@\"%\";"'
+    # Strip DEFINER clauses (they name users that don't exist here).
+    gunzip -c "$file" | sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g' \
+        | box_compose exec -T mariadb sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE"'
+    [[ "$src" == s3://* ]] && rm -f "$file"
+    log "✓ Imported"
+}
+
+# One JSON object for MageDevKit: containers, release, waiting for a database,
+# mode, production, deploy lock. Nothing secret.
+status_json() {
+    box_compose ps -a --format json 2>/dev/null | python3 -c 'import json, os, sys
+containers = []
+for line in sys.stdin.read().splitlines():
+    try:
+        rows = json.loads(line)
+    except ValueError:
+        continue
+    for c in rows if isinstance(rows, list) else [rows]:
+        containers.append({k.lower(): c.get(k, "") for k in ("Service", "State", "Health", "Status")})
+try:
+    release = json.load(open(sys.argv[1] + "/release.json"))
+except (OSError, ValueError):
+    release = {}
+print(json.dumps({"containers": containers, "release": release,
+                  "awaitingDatabase": os.path.exists(sys.argv[1] + "/awaiting-database"),
+                  "deployLocked": os.path.isdir(sys.argv[1] + "/deploy.lock"),
+                  "mode": sys.argv[2], "production": sys.argv[3]}))' \
+        "$SHARED" "$(target_setting MAGENTO_MODE)" "$(target_setting PRODUCTION)"
+}
+
 case "$cmd" in
     status)
+        if [ "$ARG" = --json ]; then status_json; exit 0; fi
         box_compose ps
         echo
         [ -f "$SHARED/release.json" ] && { echo "Release: $(cat "$SHARED/release.json")"; echo; }
+        [ -f "$SHARED/awaiting-database" ] && echo "Waiting for a database: box refresh s3://<bucket>/<dump>.sql.gz"
         if wait_for_https / 10 2>/dev/null; then echo "https://$APP_DOMAIN/ answers 200"; else echo "https://$APP_DOMAIN/ isn't answering 200"; fi
-        ;;
-    compose) box_compose "$@" ;;
-    magento) box_magento "$@" ;;
-    maintenance)
-        case "${1:-}" in
-            on) box_magento maintenance:enable ;;
-            off) box_magento maintenance:disable ;;
-            *) usage 1 ;;
-        esac
         ;;
     cache-flush)
         box_magento cache:flush
-        box_compose exec -T varnish varnishadm 'ban req.url ~ .' >/dev/null
+        ban_varnish
         log "✓ Magento caches and Varnish flushed"
         ;;
-    reindex) box_magento indexer:reindex "$@" ;;
-    restart)
-        [ -n "${1:-}" ] || usage 1
-        box_compose restart "$1"
+    cache-clean) box_magento cache:clean ;;
+    indexer-status) box_magento indexer:status ;;
+    reindex)
+        [ -z "$ARG" ] || [[ "$ARG" =~ ^[a-z0-9_]+$ ]] || fail "'$ARG' isn't an indexer name."
+        # shellcheck disable=SC2086
+        box_magento indexer:reindex $ARG
         ;;
-    seed-db)
-        src="${1:?usage: box seed-db <s3://bucket/key.sql.gz | /path/dump.sql.gz>}"
-        # shellcheck disable=SC1091
-        source "$DEPLOY_DIR/scripts/lib/deploy-lock.sh"
-        APPLICATION_NAME=box DEPLOYMENT_ID="seed-db-$$"
-        export APPLICATION_NAME DEPLOYMENT_ID
-        deploy_lock_acquire
-        trap deploy_lock_release EXIT
-        file="$src"
-        if [[ "$src" == s3://* ]]; then
-            file="$BACKUP_DIR/seed-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
-            mkdir -p "$BACKUP_DIR"
-            log "Downloading $src"
-            aws s3 cp --only-show-errors "$src" "$file"
+    restart)
+        [[ " $SERVICES " == *" $ARG "* ]] || fail "restart one of: $SERVICES"
+        box_compose restart "$ARG"
+        ;;
+    maintenance)
+        case "$ARG" in
+            on) maintenance_on; log "✓ Maintenance mode on" ;;
+            off) maintenance_off; log "✓ Maintenance mode off" ;;
+            *) usage 1 ;;
+        esac
+        ;;
+    logs)
+        case "$ARG" in
+            magento-system|magento-exception) tail -n 300 "$MAGENTO_ROOT/var/log/${ARG#magento-}.log" 2>/dev/null || echo "(no ${ARG#magento-}.log yet)" ;;
+            *)
+                [[ " $SERVICES " == *" $ARG "* ]] || fail "logs of one of: $SERVICES, magento-system, magento-exception"
+                box_compose logs --no-color --tail 300 "$ARG"
+                ;;
+        esac
+        ;;
+    composer-validate) box_compose exec -T php composer validate --no-check-publish ;;
+    composer-install) repair composer-install composer_install ;;
+    build) repair build build ;;
+    full-build)
+        full_build() { composer_install; build; box_magento indexer:reindex; }
+        repair full-build full_build
+        ;;
+    fix-ownership)
+        box_lock fix-ownership
+        # The writable folders only, inside the php container (as its root).
+        box_compose exec -T -u root php sh -c 'chown -R "$(stat -c %u:%g /var/www/html/bin/magento)" \
+            /var/www/html/var /var/www/html/generated /var/www/html/pub/static /var/www/html/pub/media'
+        record_event repair fix-ownership
+        log "✓ var/, generated/, pub/static and pub/media belong to the deploy user again"
+        ;;
+    refresh)
+        [[ "$ARG" =~ ^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/[A-Za-z0-9_.:/=+-]+$ ]] && [[ "$ARG" != *..* ]] \
+            || fail "refresh takes the dump's s3://bucket/key (a .sql.gz)."
+        box_lock refresh
+        if [ "$(db_tables)" != 0 ]; then dump_db before-refresh; fi
+        maintenance_on 2>/dev/null || touch "$MAGENTO_ROOT/var/.maintenance.flag"
+        seed_db "$ARG"
+        rc=0
+        ( box_magento setup:upgrade --keep-generated && box_magento indexer:reindex && box_magento cache:flush ) || rc=$?
+        if [ "$rc" != 0 ]; then
+            publish_status failed
+            fail "the database is loaded, but setup:upgrade/reindex failed (exit $rc) — the store stays in maintenance. The dump from before is in $BACKUP_DIR."
         fi
-        gzip -t "$file" || fail "$file isn't a valid .gz file."
-        box_compose up -d mariadb
-        wait_for_healthy 180 || fail "mariadb isn't healthy."
-        log "Importing $file into the database (replaces its contents)"
-        # shellcheck disable=SC2016
-        box_compose exec -T mariadb sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" -e "DROP DATABASE IF EXISTS \`$MARIADB_DATABASE\`; CREATE DATABASE \`$MARIADB_DATABASE\`; GRANT ALL ON \`$MARIADB_DATABASE\`.* TO \"$MARIADB_USER\"@\"%\";"'
-        # Strip DEFINER clauses (they name users that don't exist here).
-        gunzip -c "$file" | sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g' \
-            | box_compose exec -T mariadb sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE"'
-        log "✓ Imported. Retry the deployment (or run: box magento setup:upgrade --keep-generated)."
+        maintenance_off
+        rm -f "$SHARED/awaiting-database" "$MAGENTO_ROOT/var/.maintenance.flag"
+        ban_varnish
+        record_event repair "refresh $ARG"
+        publish_status ok
+        log "✓ Database refreshed from $ARG"
+        ;;
+    # --- a shell on the box only (the SSM document doesn't allow these) ---
+    compose) box_compose "$@" ;;
+    magento) box_magento "$@" ;;
+    seed-db)
+        box_lock seed-db
+        seed_db "${ARG:?usage: box seed-db <s3://bucket/key.sql.gz | /path/dump.sql.gz>}"
+        log "Next: box magento setup:upgrade --keep-generated (or use box refresh, which does it all)."
         ;;
     rollback)
         prev="$(grep '"result": "live"' "$SHARED/deploys.jsonl" 2>/dev/null | tail -2 | head -1 || true)"
         [ -n "$prev" ] || fail "no earlier live release recorded in $SHARED/deploys.jsonl."
         log "Previous live release: $prev"
-        log "Roll back from the AWS console or CLI: CodeDeploy → $APP-$ENV_NAME → deployment of that release → Redeploy."
+        log "Roll back from MageDevKit (Redeploy) or CodeDeploy → $APP-$ENV_NAME → that deployment → Redeploy."
         ;;
     -h|--help|help) usage ;;
     *) usage 1 ;;

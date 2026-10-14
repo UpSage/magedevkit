@@ -23,29 +23,6 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 source "$DEPLOY_DIR/scripts/lib/site-checks.sh"
 load_box_env
 
-BACKUPS_KEEP=3
-
-prune_backups() {  # $1 = glob prefix
-    find "$BACKUP_DIR" -maxdepth 1 -name "$1*.sql.gz" -printf '%T@ %p\n' \
-        | sort -rn | tail -n +$((BACKUPS_KEEP + 1)) | cut -d' ' -f2- | xargs -r rm -f
-}
-
-dump_db() {  # $1 = file name prefix
-    local dump
-    mkdir -p "$BACKUP_DIR"
-    dump="$BACKUP_DIR/$1-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
-    log "Dumping the database → $dump"
-    # shellcheck disable=SC2016
-    box_compose exec -T mariadb sh -c '
-        dump=$(command -v mariadb-dump || command -v mysqldump)
-        exec "$dump" -uroot -p"$MARIADB_ROOT_PASSWORD" --all-databases \
-            --single-transaction --quick --routines --events --triggers' \
-        | gzip > "$dump"
-    gzip -t "$dump" || fail "the dump $dump is corrupt — stopping before anything changes."
-    log "✓ Dump written ($(du -h "$dump" | cut -f1))"
-    prune_backups "$1"
-}
-
 # --- 1. Checks that can refuse the deploy (nothing changed yet) ----------------
 
 if [ -f "$MAGENTO_ROOT/app/etc/di.xml" ]; then
@@ -97,12 +74,21 @@ log "✓ Services healthy"
 
 # --- 4. Magento ----------------------------------------------------------------
 
-TABLES="$(box_compose exec -T mariadb sh -c \
-    'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=\"$MARIADB_DATABASE\""' \
-    2>/dev/null | tr -d '[:space:]')"
+# A new environment's first release: the code is in place, the database is
+# still empty. The deploy succeeds (the pipeline stays green), the store shows
+# Magento's maintenance page, and it waits for a database — loaded with
+# `box refresh s3://…` (or Refresh database in MageDevKit), which finishes the
+# job and clears the flag.
+TABLES="$(db_tables)"
 if [ "${TABLES:-0}" = 0 ]; then
-    fail "the database is empty — load one first on the box: $DEPLOY_DIR/scripts/box seed-db <s3://bucket/dump.sql.gz | file>, then retry the deployment."
+    mkdir -p "$MAGENTO_ROOT/var"
+    touch "$MAGENTO_ROOT/var/.maintenance.flag" "$SHARED/awaiting-database"
+    publish_status awaiting-database
+    log "The database is empty — this release is installed and waits for one. Load it with:"
+    log "  $DEPLOY_DIR/scripts/box refresh s3://<bucket>/<dump>.sql.gz   (or Refresh database in MageDevKit)"
+    exit 0
 fi
+rm -f "$SHARED/awaiting-database"
 
 log "Waiting for OpenSearch"
 deadline=$((SECONDS + 120))

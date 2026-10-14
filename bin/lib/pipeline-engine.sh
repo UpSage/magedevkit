@@ -26,8 +26,6 @@ load_env
 # shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/m2-catalog.sh"
 # shellcheck disable=SC1091
-source "$PLATFORM_DIR/bin/lib/terraform.sh"
-# shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/aws.sh"
 
 KIT_SRC="$PLATFORM_DIR/pipeline/templates"
@@ -229,11 +227,25 @@ else
     ACCOUNT_ID="$(pl_ask ACCOUNT "AWS account number for $ENV_SEL (12 digits)" "$PREV_ACCOUNT" '^[0-9]{12}$' '12 digits, e.g. 123456789012')"
 fi
 
-mapfile -t ZONES < <(aws_q route53 list-hosted-zones --query 'HostedZones[?Config.PrivateZone==`false`].Name' --output text | tr '\t' '\n' | sed 's/\.$//' | grep . || true)
+# Public zones as "name<TAB>id" — the template needs the zone's id.
+declare -A ZONE_IDS=()
+ZONES=()
+while IFS=$'\t' read -r zname zid; do
+    [ -n "$zname" ] || continue
+    zname="${zname%.}"
+    ZONES+=("$zname")
+    ZONE_IDS["$zname"]="${zid##*/}"
+done < <(aws_q route53 list-hosted-zones --query 'HostedZones[?Config.PrivateZone==`false`].[Name,Id]' --output text || true)
 if [ "${#ZONES[@]}" -gt 0 ]; then
     ZONE="$(pl_choose ZONE 'Route 53 hosted zone for the store hostname' "${ZONES[0]}" "${ZONES[@]}")"
 else
     ZONE="$(pl_ask ZONE 'Route 53 hosted zone (an existing public zone, e.g. example.com)' '' '^[a-z0-9.-]+\.[a-z]{2,}$' 'a domain like example.com')"
+fi
+if [ -n "${ZONE_IDS[$ZONE]:-}" ]; then
+    ZONE_ID="${ZONE_IDS[$ZONE]}"
+    set_env_var "$ENV_FILE" PIPELINE_ZONE_ID "$ZONE_ID"
+else
+    ZONE_ID="$(pl_ask ZONE_ID "Hosted zone ID of $ZONE (Route 53 → Hosted zones, starts with Z)" '' '^Z[A-Z0-9]{1,32}$' 'Z followed by letters and digits')"
 fi
 DOMAIN="$(pl_ask DOMAIN 'Store hostname' "$ENV_SEL.$ZONE" "^([a-z0-9-]+\\.)*${ZONE//./\\.}\$" "a hostname inside $ZONE")"
 INSTANCE_TYPE="$(pl_choose INSTANCE_TYPE 'EC2 instance size (the whole stack runs on it)' t3.large \
@@ -256,10 +268,41 @@ MODE_SEL="$(pl_choose MODE 'Magento mode on this environment' production \
     'production — compiled code and static files from the build (recommended)' 'developer — for debugging only; slower')"
 ACME_EMAIL="$(pl_ask ACME_EMAIL "Email for Let's Encrypt certificate notices" "$("${GIT[@]}" config user.email 2>/dev/null || true)" '^[^@ ]+@[^@ ]+\.[^@ ]+$' 'an email address')"
 STATIC_LOCALES="$(pl_ask STATIC_LOCALES 'Locales to build static content for (space-separated)' en_US '^[a-z]{2}_[A-Z]{2}( [a-z]{2}_[A-Z]{2})*$' 'e.g. en_US or "en_US fr_FR"')"
-TF_BUCKET_DEF="${ACCOUNT_ID:+${APP}-tfstate-$ACCOUNT_ID}"
-TF_STATE_BUCKET="$(pl_ask TF_STATE_BUCKET 'S3 bucket for the Terraform state (created by the provision wizard if missing)' "$TF_BUCKET_DEF" '^[a-z0-9][a-z0-9.-]{2,62}$' 'an S3 bucket name')"
 VOLUME_GB="$(pl_saved VOLUME_GB 50)"
 set_env_var "$ENV_FILE" PIPELINE_VOLUME_GB "$VOLUME_GB"
+LOG_RETENTION_DAYS="$(pl_saved LOG_RETENTION_DAYS 14)"
+set_env_var "$ENV_FILE" PIPELINE_LOG_RETENTION_DAYS "$LOG_RETENTION_DAYS"
+
+# The box's Ubuntu image: looked up once (AWS's public SSM parameter for
+# Canonical's 24.04) and then kept — a different image replaces the box, and
+# its database with it. Looked up again only for another region.
+UBUNTU_AMI_PARAM=/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+IMAGE_ID="$(pl_target_field "$ENV_SEL" imageId)"
+[ "$(pl_target_field "$ENV_SEL" region)" = "$AWS_REGION_SEL" ] || IMAGE_ID=""
+[ -n "${PRESET_PIPELINE_IMAGE_ID:-}" ] && IMAGE_ID="$PRESET_PIPELINE_IMAGE_ID"
+if [ -z "$IMAGE_ID" ]; then
+    IMAGE_ID="$(aws_q ssm get-parameter --name "$UBUNTU_AMI_PARAM" --query Parameter.Value --output text || true)"
+    [[ "$IMAGE_ID" =~ ^ami-[0-9a-f]{8,17}$ ]] && log "✓ Ubuntu 24.04 image for $AWS_REGION_SEL: $IMAGE_ID (kept from now on)"
+fi
+[[ "$IMAGE_ID" =~ ^ami-[0-9a-f]{8,17}$ ]] \
+    || IMAGE_ID="$(pl_ask IMAGE_ID "Ubuntu 24.04 image (AMI) in $AWS_REGION_SEL — see SSM parameter $UBUNTU_AMI_PARAM" '' '^ami-[0-9a-f]{8,17}$' 'ami- followed by 8–17 hex digits')"
+
+DUMP_BUCKET="$(pl_ask DUMP_BUCKET 'S3 bucket with database dumps this environment may load (blank for none)' '' '^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$' 'an S3 bucket name, or blank')"
+
+# Production or not decides the safety settings a copy of live data gets
+# (no outgoing mail, no indexing, payment sandboxes) and, in the provision
+# wizard, termination protection. Per environment, so never another
+# environment's saved answer.
+PRODUCTION="$(pl_target_field "$ENV_SEL" production)"
+case "$ENV_SEL" in prod*|live*) PROD_DEF=yes ;; *) PROD_DEF=no ;; esac
+PRODUCTION="${PRESET_PIPELINE_PRODUCTION:-${PRODUCTION:-$PROD_DEF}}"
+if [ -z "${PRESET_PIPELINE_PRODUCTION:-}" ]; then
+    i="$(prompt_menu "Is $ENV_SEL a production environment?" "$([ "$PRODUCTION" = yes ] && echo 2 || echo 1)" \
+        'no — dev or staging: no outgoing email, no search-engine indexing, payment sandboxes' \
+        'yes — the live store: none of those safety settings, and AWS protects it from deletion')"
+    PRODUCTION="$([ "$i" = 2 ] && echo yes || echo no)"
+fi
+[[ "$PRODUCTION" =~ ^(yes|no)$ ]] || fail "PRESET_PIPELINE_PRODUCTION must be yes or no."
 
 STORAGE_DRIVER="file"; MEDIA_BUCKET=""; MEDIA_REGION=""
 if [ "${REMOTE_STORAGE_DRIVER:-}" = aws-s3 ] && [ -n "${REMOTE_STORAGE_BUCKET:-}" ]; then
@@ -273,10 +316,11 @@ fi
 
 KIT=(
     [APP]="$APP" [ENV_NAME]="$ENV_SEL" [AWS_REGION]="$AWS_REGION_SEL" [APP_DOMAIN]="$DOMAIN"
-    [HOSTED_ZONE]="$ZONE" [INSTANCE_TYPE]="$INSTANCE_TYPE" [VOLUME_GB]="$VOLUME_GB"
+    [HOSTED_ZONE_ID]="$ZONE_ID" [INSTANCE_TYPE]="$INSTANCE_TYPE" [VOLUME_GB]="$VOLUME_GB" [IMAGE_ID]="$IMAGE_ID"
     [DEPLOY_BRANCH]="$BRANCH" [GITHUB_REPO]="$GITHUB_REPO" [GITHUB_CONNECTION_ARN]="$GITHUB_CONNECTION"
-    [OFF_HOURS]="$([ "$OFF_HOURS" = yes ] && echo true || echo false)" [MAGENTO_MODE]="$MODE_SEL"
-    [ACME_EMAIL]="$ACME_EMAIL" [TF_STATE_BUCKET]="$TF_STATE_BUCKET" [ADMIN_URI]="${MAGENTO_ADMIN_URI:-admin}"
+    [OFF_HOURS]="$OFF_HOURS" [MAGENTO_MODE]="$MODE_SEL" [PRODUCTION]="$PRODUCTION"
+    [DUMP_BUCKET]="$DUMP_BUCKET" [LOG_RETENTION_DAYS]="$LOG_RETENTION_DAYS"
+    [ACME_EMAIL]="$ACME_EMAIL" [ADMIN_URI]="${MAGENTO_ADMIN_URI:-admin}"
     [APP_TIMEZONE]="${APP_TIMEZONE:-UTC}" [STATIC_LOCALES]="$STATIC_LOCALES" [STORAGE_DRIVER]="$STORAGE_DRIVER"
     [MEDIA_BUCKET]="$MEDIA_BUCKET" [MEDIA_REGION]="$MEDIA_REGION"
 )
@@ -294,7 +338,8 @@ while IFS= read -r -d '' src; do
     rel="${src#"$KIT_SRC/"}"
     case "$rel" in
         deploy/targets/target.env) kit_render "$src" "deploy/targets/$ENV_SEL.env" ;;
-        deploy/infra/envs/ENV/*) kit_render "$src" "deploy/infra/envs/$ENV_SEL/${rel#deploy/infra/envs/ENV/}" ;;
+        deploy/targets/target.config-overrides.php) kit_render "$src" "deploy/targets/$ENV_SEL.config-overrides.php" ;;
+        deploy/infra/ENV.params.json) kit_render "$src" "deploy/infra/$ENV_SEL.params.json" ;;
         *) kit_render "$src" "$rel" ;;
     esac
 done < <(find "$KIT_SRC" -type f -print0 | sort -z)
@@ -333,10 +378,14 @@ import json, sys
 for f, h in json.load(open(sys.argv[1])).get("files", {}).items():
     print("%s\t%s" % (f, h))' "$MANIFEST")
 fi
+# Seed-once files (an environment's config-overrides.php) are written only
+# when missing; after that they are the store's own and never compared.
+pl_seed_once() { [[ "$1" == deploy/targets/*.config-overrides.php ]]; }
 NEW=(); UPDATED=(); UNCHANGED=(); EDITED=()
 for f in "${STAGED[@]}"; do
     target="$MAGENTO_DIR/$f"
     if [ ! -e "$target" ]; then NEW+=("$f"); continue; fi
+    if pl_seed_once "$f"; then UNCHANGED+=("$f"); continue; fi
     cur="$(file_sha256 "$target")"; gen="$(file_sha256 "$KIT_STAGE/$f")"
     if [ "$cur" = "$gen" ]; then UNCHANGED+=("$f")
     elif [ "${RECORDED[$f]:-}" = "$cur" ]; then UPDATED+=("$f")
@@ -345,6 +394,21 @@ for f in "${STAGED[@]}"; do
 done
 OLD_PRESENT=()
 for f in "${OLD_CI_FILES[@]}"; do pl_tracked "$f" && OLD_PRESENT+=("$f"); done
+
+# Retired: files an earlier kit wrote that this one doesn't (the Terraform of
+# kit v2, for one). Removed when they are still as generated; kept and
+# reported when edited by hand. Other environments' own files stay.
+declare -A STAGED_SET=()
+for f in "${STAGED[@]}"; do STAGED_SET["$f"]=1; done
+RETIRE=(); RETIRE_KEPT=()
+for f in "${!RECORDED[@]}"; do
+    [ -n "${STAGED_SET[$f]:-}" ] && continue
+    case "$f" in deploy/targets/*.env|deploy/infra/*.params.json) continue ;; esac
+    [ -e "$MAGENTO_DIR/$f" ] || continue
+    if [ "$(file_sha256 "$MAGENTO_DIR/$f")" = "${RECORDED[$f]}" ]; then RETIRE+=("$f"); else RETIRE_KEPT+=("$f"); fi
+done
+[ "${#RETIRE[@]}" -gt 0 ] && log "No longer part of the kit (removed): $(pl_summary "${RETIRE[@]}")"
+[ "${#RETIRE_KEPT[@]}" -gt 0 ] && log "⚠ No longer part of the kit, but edited by hand (kept — remove them yourself when done): $(pl_summary "${RETIRE_KEPT[@]}")"
 
 pl_summary() { [ "$#" -gt 0 ] && printf '%s' "$*" | sed 's/ /, /g' || printf 'none'; }
 log "New: ${#NEW[@]}, updated: ${#UPDATED[@]}, unchanged: ${#UNCHANGED[@]}, edited by hand: ${#EDITED[@]}"
@@ -367,7 +431,8 @@ fi
 ui_review "Ready to write the pipeline kit" \
     "Environment" "$ENV_SEL — https://$DOMAIN/" \
     "AWS" "account $ACCOUNT_ID, $AWS_REGION_SEL${CONNECTION_SEL:+ (through connection $CONNECTION_SEL)}" \
-    "Box" "$INSTANCE_TYPE, ${VOLUME_GB} GB$([ "$OFF_HOURS" = yes ] && printf ', stopped off-hours')" \
+    "Box" "$INSTANCE_TYPE, ${VOLUME_GB} GB, $IMAGE_ID$([ "$OFF_HOURS" = yes ] && printf ', stopped off-hours')" \
+    "Database dumps" "${DUMP_BUCKET:-none}" \
     "Deploys from" "$GITHUB_REPO @ $BRANCH" \
     "Magento" "${MAGENTO_VERSION} in $MODE_SEL mode, PHP ${PHP_VERSION}, MariaDB ${MARIADB_VERSION}" \
     "Media" "$([ "$STORAGE_DRIVER" = aws-s3 ] && printf 'S3 bucket %s' "$MEDIA_BUCKET" || printf 'on the box’s disk')" \
@@ -376,6 +441,8 @@ ui_review "Ready to write the pipeline kit" \
     "Unchanged" "${#UNCHANGED[@]}" \
     "Edited by hand" "$([ "${#EDITED[@]}" -gt 0 ] && printf '%s (%s)' "${#EDITED[@]}" "$([ "$REPLACE_EDITED" = yes ] && echo replaced || echo kept)" || echo none)" \
     "Old pipeline files" "$([ "${#OLD_PRESENT[@]}" -gt 0 ] && printf '%s — %s' "$(pl_summary "${OLD_PRESENT[@]}")" "$([ "$REMOVE_OLD" = yes ] && echo removed || echo kept)" || echo none)" \
+    "No longer in the kit" "$([ $((${#RETIRE[@]} + ${#RETIRE_KEPT[@]})) -gt 0 ] && printf '%s removed, %s edited (kept)' "${#RETIRE[@]}" "${#RETIRE_KEPT[@]}" || echo none)" \
+    "Production" "$PRODUCTION$([ "$PRODUCTION" = no ] && printf ' — no outgoing email, no indexing, payment sandboxes')" \
     || cancel "Stopped at the review — nothing was written. Run the pipeline wizard again when you're ready."
 
 # ------------------------------------------------------------------
@@ -404,10 +471,15 @@ log "✓ $WRITTEN file(s) written"
 if [ "$REMOVE_OLD" = yes ] && [ "${#OLD_PRESENT[@]}" -gt 0 ]; then
     ui_task "Removing the old pipeline files" "${GIT[@]}" rm -q -- "${OLD_PRESENT[@]}"
 fi
+if [ "${#RETIRE[@]}" -gt 0 ]; then
+    ui_task "Removing files the kit no longer has" "${GIT[@]}" rm -q -- "${RETIRE[@]}"
+fi
 
 # Manifest: checksums of what was generated this run (also for kept edits —
 # so they keep showing as "edited by hand"), merged with the other targets'.
-(cd "$KIT_STAGE" && sha256sum "${STAGED[@]}") | python3 -c '
+MANIFEST_FILES=()
+for f in "${STAGED[@]}"; do pl_seed_once "$f" || MANIFEST_FILES+=("$f"); done
+(cd "$KIT_STAGE" && sha256sum "${MANIFEST_FILES[@]}") | python3 -c '
 import json, os, sys
 path, version, env, target = sys.argv[1], int(sys.argv[2]), sys.argv[3], json.loads(sys.argv[4])
 try:
@@ -417,8 +489,9 @@ except (OSError, ValueError):
 files = {}
 for k, v in m.get("files", {}).items():
     # Keep entries of other environments only; this run rewrites the rest.
-    if (k.startswith("deploy/targets/") or k.startswith("deploy/infra/envs/")) and not (
-            k == "deploy/targets/%s.env" % env or k.startswith("deploy/infra/envs/%s/" % env)):
+    if ((k.startswith("deploy/targets/") and k.endswith(".env"))
+            or (k.startswith("deploy/infra/") and k.endswith(".params.json"))) and k not in (
+            "deploy/targets/%s.env" % env, "deploy/infra/%s.params.json" % env):
         files[k] = v
 for line in sys.stdin:
     h, f = line.rstrip("\n").split("  ", 1)
@@ -432,7 +505,8 @@ with open(path, "w") as fh:
     fh.write("\n")
 ' "$MANIFEST" "$KIT_VERSION" "$ENV_SEL" "$(python3 -c 'import json,sys; print(json.dumps(dict(zip(sys.argv[1::2], sys.argv[2::2]))))' \
     domain "$DOMAIN" region "$AWS_REGION_SEL" account "$ACCOUNT_ID" branch "$BRANCH" app "$APP" \
-    instanceType "$INSTANCE_TYPE" mode "$MODE_SEL" repo "$GITHUB_REPO" stateBucket "$TF_STATE_BUCKET")"
+    instanceType "$INSTANCE_TYPE" mode "$MODE_SEL" repo "$GITHUB_REPO" zoneId "$ZONE_ID" imageId "$IMAGE_ID" \
+    production "$PRODUCTION" dumpBucket "$DUMP_BUCKET")"
 log "✓ deploy/pipeline.json updated"
 
 # ------------------------------------------------------------------
@@ -453,8 +527,8 @@ ui_task "Checking the deploy scripts (bash -n)" check_scripts || fail "A deploy 
 check_compose() {
     local tmp rc=0
     tmp="$(mktemp -d)"
-    printf 'APP_NAME=%s\nAPP_HOME=/opt/%s\nAPP_DOMAIN=%s\nACME_EMAIL=%s\nDEPLOY_UID=1001\nDEPLOY_GID=1001\nDB_NAME=magento\nDB_USER=magento\nDB_PASSWORD=x\nDB_ROOT_PASSWORD=x\nRABBITMQ_USER=magento\nRABBITMQ_PASS=x\nECR_REGISTRY=123456789012.dkr.ecr.%s.amazonaws.com\nIMAGE_TAG=s-check\n' \
-        "$APP" "$APP" "$DOMAIN" "$ACME_EMAIL" "$AWS_REGION_SEL" > "$tmp/.env"
+    printf 'APP_NAME=%s\nAPP_HOME=/opt/%s\nAPP_DOMAIN=%s\nACME_EMAIL=%s\nDEPLOY_UID=1001\nDEPLOY_GID=1001\nDB_NAME=magento\nDB_USER=magento\nDB_PASSWORD=x\nDB_ROOT_PASSWORD=x\nRABBITMQ_USER=magento\nRABBITMQ_PASS=x\nECR_REGISTRY=123456789012.dkr.ecr.%s.amazonaws.com\nECR_PREFIX=%s-%s\nIMAGE_TAG=s-check\n' \
+        "$APP" "$APP" "$DOMAIN" "$ACME_EMAIL" "$AWS_REGION_SEL" "$APP" "$ENV_SEL" > "$tmp/.env"
     docker compose --project-directory "$MAGENTO_DIR/deploy/compose" -f "$MAGENTO_DIR/deploy/compose/app.yml" \
         -f "$MAGENTO_DIR/deploy/compose/edge.yml" --env-file "$MAGENTO_DIR/.platform/stack.env" --env-file "$tmp/.env" \
         config --quiet || rc=1
@@ -468,32 +542,29 @@ else
     log "⚠ docker compose isn't available — skipped the compose check."
 fi
 
-check_terraform() {
-    local tmp rc=0
-    tmp="$(mktemp -d)"
-    cp -r "$MAGENTO_DIR/deploy/infra" "$tmp/"
-    rm -f "$tmp/infra/envs/$ENV_SEL/backend.tf"
-    tf -chdir="$tmp/infra" fmt -check -recursive >/dev/null || { log "terraform fmt found unformatted files"; rc=1; }
-    tf -chdir="$tmp/infra/envs/$ENV_SEL" init -backend=false -input=false >/dev/null || rc=1
-    [ "$rc" = 0 ] && { tf -chdir="$tmp/infra/envs/$ENV_SEL" validate -no-color || rc=1; }
-    rm -rf "$tmp"
+# The CloudFormation template: always the offline check (bin/lib/cfn-check.py),
+# plus cfn-lint when it's installed, plus AWS's own validate-template when a
+# connection works (read-only — nothing is created).
+check_stack() {
+    local tpl="$MAGENTO_DIR/deploy/infra/stack.json" params="$MAGENTO_DIR/deploy/infra/$ENV_SEL.params.json" compact rc=0
+    python3 "$PLATFORM_DIR/bin/lib/cfn-check.py" "$tpl" "$params" || return 1
+    if command -v cfn-lint >/dev/null 2>&1; then
+        cfn-lint --regions "$AWS_REGION_SEL" -- "$tpl" || rc=1
+    fi
+    if [ "$rc" = 0 ] && [ -n "$CONNECTION_SEL" ]; then
+        compact="$(mktemp)"
+        python3 -c 'import json, sys; json.dump(json.load(open(sys.argv[1])), open(sys.argv[2], "w"), separators=(",", ":"))' "$tpl" "$compact"
+        if aws_q cloudformation validate-template --template-body "file://$compact" >/dev/null; then
+            log "✓ AWS accepts the template (validate-template)"
+        else
+            log "⚠ Couldn't ask AWS to validate the template (the connection may not allow it) — the offline check passed."
+        fi
+        rm -f "$compact"
+    fi
     return "$rc"
 }
-# Only when something under deploy/infra differs from what an earlier run
-# generated (and validated) — the provider takes a while to load.
-INFRA_CHANGED=0
-for f in "${NEW[@]}" "${UPDATED[@]}" "${EDITED[@]}"; do
-    [[ "$f" == deploy/infra/* ]] && INFRA_CHANGED=1
-done
-if [ "${PIPELINE_SKIP_TERRAFORM:-}" = 1 ]; then
-    log "Skipped the Terraform check (PIPELINE_SKIP_TERRAFORM=1)."
-elif [ "$INFRA_CHANGED" = 0 ]; then
-    log "✓ deploy/infra is unchanged since it was generated and checked — skipping terraform validate."
-else
-    ensure_terraform
-    ui_task "Checking the Terraform (fmt, validate — the first run downloads the AWS provider)" check_terraform \
-        || fail "deploy/infra didn't validate (see the terraform output above)."
-fi
+ui_task "Checking the CloudFormation template" check_stack \
+    || fail "deploy/infra/stack.json didn't pass its checks (see above)."
 
 # The heavy check: what CodeBuild will do, on this machine.
 build_test() {

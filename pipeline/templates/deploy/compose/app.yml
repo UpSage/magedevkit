@@ -9,7 +9,7 @@
 name: ${APP_NAME}
 
 x-php: &php
-  image: ${ECR_REGISTRY}/${APP_NAME}-php:${IMAGE_TAG}
+  image: ${ECR_REGISTRY}/${ECR_PREFIX}-php:${IMAGE_TAG}
   user: "${DEPLOY_UID}:${DEPLOY_GID}"
   restart: unless-stopped
   environment:
@@ -33,7 +33,7 @@ services:
     command: ["sh", "-c", "while true; do php bin/magento cron:run >/dev/null 2>&1; sleep 60; done"]
 
   nginx:
-    image: ${ECR_REGISTRY}/${APP_NAME}-nginx:${IMAGE_TAG}
+    image: ${ECR_REGISTRY}/${ECR_PREFIX}-nginx:${IMAGE_TAG}
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}

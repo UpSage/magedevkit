@@ -43,6 +43,12 @@ chmod +x "$DEPLOY_DIR"/scripts/render-env "$DEPLOY_DIR"/scripts/deploy "$DEPLOY_
 
 install -m 600 "$INCOMING/release.env" "$SHARED/release.env"
 install -m 600 "$SHARED/env.php" "$MAGENTO_ROOT/app/etc/env.php"
+# This environment's own env.php additions (seeded once by the pipeline wizard).
+if [ -f "$DEPLOY_DIR/targets/$ENV_NAME.config-overrides.php" ]; then
+    install -m 600 "$DEPLOY_DIR/targets/$ENV_NAME.config-overrides.php" "$MAGENTO_ROOT/app/etc/env.overrides.php"
+else
+    rm -f "$MAGENTO_ROOT/app/etc/env.overrides.php"
+fi
 
 mkdir -p "$MAGENTO_ROOT/var" "$MAGENTO_ROOT/generated" "$MAGENTO_ROOT/pub/static" "$MAGENTO_ROOT/pub/media"
 chmod u+x "$MAGENTO_ROOT/bin/magento"

@@ -1,8 +1,9 @@
 # @@HEADER@@
 #
 # CodeBuild (privileged, for Docker). The CodeBuild project created by
-# deploy/infra points at this file and sets APP_NAME, ENV_NAME and
-# COMPOSER_AUTH_PARAM.
+# deploy/infra/stack.json points at this file and sets APP_NAME, ENV_NAME,
+# COMPOSER_AUTH_PARAM and STATIC_LOCALES. Images go to this environment's own
+# ECR repos, <app>-<env>-php and <app>-<env>-nginx.
 #
 #   1. php/nginx images from deploy/docker at the pins in .platform/stack.env,
 #      tagged by a hash of those inputs — built and pushed only when ECR
@@ -24,11 +25,13 @@ phases:
         ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         IMAGE_TAG="s-$(cat .platform/stack.env $(find deploy/docker -type f | sort) | sha256sum | cut -c1-16)"
         printf 'ECR_REGISTRY=%s\nIMAGE_TAG=%s\n' "$ECR_REGISTRY" "$IMAGE_TAG" > /tmp/build.env
-        echo "[buildspec] images ${APP_NAME}-php/nginx:${IMAGE_TAG}"
+        ECR_PREFIX="${APP_NAME}-${ENV_NAME}"
+        printf 'ECR_PREFIX=%s\n' "$ECR_PREFIX" >> /tmp/build.env
+        echo "[buildspec] images ${ECR_PREFIX}-php/nginx:${IMAGE_TAG}"
         aws ecr get-login-password --region "$AWS_REGION" \
           | docker login --username AWS --password-stdin "$ECR_REGISTRY"
         for svc in php nginx; do
-          repo="${APP_NAME}-${svc}"
+          repo="${ECR_PREFIX}-${svc}"
           if aws ecr describe-images --repository-name "$repo" --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
             echo "[buildspec] $repo:$IMAGE_TAG already in ECR — not rebuilding"
             continue
@@ -52,11 +55,11 @@ phases:
           --query Parameter.Value --output text)"
         export COMPOSER_AUTH
         echo "[buildspec] COMPOSER_AUTH set (${#COMPOSER_AUTH} bytes)"
-        PHP_IMAGE="$ECR_REGISTRY/${APP_NAME}-php:$IMAGE_TAG"
+        PHP_IMAGE="$ECR_REGISTRY/${ECR_PREFIX}-php:$IMAGE_TAG"
         docker pull --quiet "$PHP_IMAGE"
         docker run --rm \
           -e COMPOSER_AUTH -e COMPOSER_ALLOW_SUPERUSER=1 -e CODEBUILD_RESOLVED_SOURCE_VERSION -e STATIC_LOCALES \
-          -e IMAGE_TAG="$IMAGE_TAG" -e ECR_REGISTRY="$ECR_REGISTRY" \
+          -e IMAGE_TAG="$IMAGE_TAG" -e ECR_REGISTRY="$ECR_REGISTRY" -e ECR_PREFIX="$ECR_PREFIX" \
           -v "$PWD:/src" -w /src \
           --entrypoint bash "$PHP_IMAGE" deploy/scripts/build-release.sh
 
