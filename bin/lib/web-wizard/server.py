@@ -626,7 +626,8 @@ def read_output(wiz, stream):
 
 
 FLOW_NAMES = {"setup": "Setup", "refresh": "Refresh", "version": "Version switch", "ownership": "Ownership switch",
-              "pipeline": "Pipeline kit", "rebuild": "Magento rebuild", "account": "AWS connection"}
+              "pipeline": "Pipeline kit", "rebuild": "Magento rebuild", "account": "AWS connection",
+              "provision": "AWS environment"}
 
 
 def rerun_hint(platform_dir, script):

@@ -367,6 +367,10 @@ const WORKFLOW_TEXT = {
     icon: 'rotateCw', desc: 'composer (optional), setup:upgrade, di:compile, static content, reindex and cache — everything that makes code changes live.',
     confirm: 'Rebuilds Magento: setup:upgrade, di:compile, static content deploy, reindex and cache flush. The store is briefly offline while it compiles.',
   },
+  provision: {
+    icon: 'cloud', desc: 'Creates or updates the environment’s AWS side from the kit: the CloudFormation stack and its secrets.',
+    confirm: 'This opens the provision wizard. It checks the account, shows exactly what would change in AWS and asks before applying anything.',
+  },
   pipeline: {
     icon: 'rocket', desc: 'Writes the pipeline kit (build, deploy scripts, the EC2 stack as a CloudFormation template) into magento/deploy/ and commits it on a local branch. Nothing is pushed.',
     confirm: null,

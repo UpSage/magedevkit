@@ -6,7 +6,7 @@
 # and version pins) into magento/deploy/ and magento/.platform/stack.env,
 # validates it, and commits it on a new local branch. It never pushes — you
 # push the branch with the store, and the AWS side comes from the provision
-# wizard (planned; not in this version).
+# wizard (bin/local/provision).
 #
 # deploy/pipeline.json records the template version, the targets and a
 # checksum of every generated file, so a rerun can tell files it may update
@@ -644,7 +644,6 @@ if [ -n "$COMMIT_BRANCH" ]; then
     ui_result text "Local branch" "$COMMIT_BRANCH (not pushed)"
     ui_result command "Push it, then open a pull request into $BRANCH" "git -C $MAGENTO_DIR push -u origin $COMMIT_BRANCH"
 fi
-# The provision wizard (AWS side) isn't built yet — don't print a command that doesn't exist.
-ui_result text "AWS environment for $ENV_SEL" "Created by the provision wizard — coming in a later MageDevKit version."
+ui_result command "Then create (or update) the AWS side of $ENV_SEL" "$(cmd_hint provision-wizard "$ENV_SEL")"
 ui_result command "Run this wizard again (another environment, or after a kit update)" "$(cmd_hint pipeline-wizard)"
 log "Pipeline kit ready for $ENV_SEL."

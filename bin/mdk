@@ -11,6 +11,8 @@
 #   mdk setup | refresh | version      the terminal flows
 #   mdk setup-wizard | refresh-wizard | version-wizard   the same, in the browser
 #   mdk pipeline | pipeline-wizard     make magento/ pipeline-ready (deploy/ kit)
+#   mdk provision [ENV] | provision-wizard   create or update ENV's AWS side (CloudFormation)
+#   mdk provision --destroy ENV        remove ENV from AWS (asks for its typed name)
 #   mdk rebuild [--composer install|update [pkgs]] | rebuild-wizard   full Magento rebuild
 #   mdk destroy --yes                  delete the instance: containers, data and its folder
 #   mdk build [--quick] [--composer install|update [pkgs] | --composer require pkg:constraint ...]
@@ -103,7 +105,7 @@ shift
 case "$CMD" in
     magento|composer|platform|refresh|version|sync-db) run "$CMD" "$@" ;;
     sync-media) run sync-media-to-s3 "$@" ;;
-    setup|setup-wizard|refresh-wizard|version-wizard|pipeline|pipeline-wizard|rebuild|rebuild-wizard|destroy) run "local/$CMD" "$@" ;;
+    setup|setup-wizard|refresh-wizard|version-wizard|pipeline|pipeline-wizard|provision|provision-wizard|rebuild|rebuild-wizard|destroy) run "local/$CMD" "$@" ;;
     build) run "local/magento-build" "$@" ;;
     module) run "local/magento-module" "$@" ;;
     mode)

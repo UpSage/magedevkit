@@ -460,6 +460,42 @@ The dashboard's **Pipeline** tab shows, for each instance:
 
 How a deploy runs on AWS is described in the generated `magento/deploy/README.md`.
 
+### Creating the AWS side (provision wizard)
+
+The **provision wizard** (`mdk provision-wizard`, or **Provision** next to a target on the
+dashboard's Pipeline tab) creates or updates one environment of the kit in AWS: the
+CloudFormation stack `mdk-<app>-<env>` and the environment's secrets. It needs a MageDevKit AWS
+connection to the kit's account (`mdk aws add`, or **AWS accounts** on the dashboard), with
+admin-level rights. Day-to-day work afterwards only needs the operator policy it creates.
+
+What it does, in order:
+
+1. **Target** — the kit must be current (not outdated, not edited by hand).
+2. **Account** — the connection must reach the account the kit records; checked again right
+   before anything changes.
+3. **Checks**, read-only: the hosted zone, the GitHub connection (approved?), the instance type
+   and image in the region, free Elastic IPs and VPCs, the dump bucket.
+4. **Secrets** — the database, root and RabbitMQ passwords (generated), Magento's crypt key (new,
+   or this instance's) and the repo.magento.com key (from `magento/auth.json`) go into SSM as
+   SecureStrings. They are handed to the AWS CLI in a private file, never on a command line or in
+   the log, and existing ones are never overwritten.
+5. **Review** — a CloudFormation change set: what would be added, changed or removed, and a rough
+   monthly cost. Replacing or removing the box (and the database on its disk) needs the typed
+   environment name. Stopping here leaves nothing behind.
+6. **Apply**, following the stack's events. A production environment gets termination protection;
+   an AWS Budgets cost alert is offered.
+7. **First release** — the pipeline starts by itself; the wizard follows it. A new environment's
+   first release succeeds with an empty database and waits for one.
+8. **Database** — pick a dump from the dump bucket; the box loads it (`box refresh`, a dump of the
+   current database first).
+
+`mdk provision --destroy ENV` removes an environment: it asks for the typed name (and once more,
+`production-ENV`, for production), empties the artifact bucket, deletes the stack, and asks
+before deleting the secrets. The dump bucket is never touched.
+
+Scripted runs preset the answers: `PRESET_PROVISION_ENV`, `_CONNECTION`, `_CRYPT_KEY=new|instance`,
+`_CONFIRM=<env>`, `_FOLLOW`, `_BUDGET`, `_DUMP=s3://…`, `_DELETE_SECRETS`.
+
 ### S3-backed media (Remote Storage)
 
 `mdk refresh` configures Magento's `Magento_RemoteStorage` driver from `.env`'s
@@ -1028,6 +1064,23 @@ initializes the volume, and `app/etc/env.php` keeps its own copy. Either run the
 `mdk platform down -v` (deletes the database) and re-run `mdk setup-wizard`.
 
 ## Changelog
+
+### 1.3.0
+
+**AWS for any store and any account.**
+- **AWS connections** (`mdk aws`, dashboard → AWS accounts): MageDevKit's own logins — access keys,
+  SSO or a role — kept in `~/.config/magedevkit/aws`, apart from `~/.aws`, from a store's S3 keys
+  and from the Magento repo. Each environment is bound to its account number.
+- **Pipeline kit 3:** the AWS side is one CloudFormation template (no Terraform, no state bucket)
+  with per-environment image repositories, an operator policy for teammates and a box command
+  document that runs only allow-listed commands. Non-production environments lock outgoing email
+  off, block search engines and use payment sandboxes.
+- **Provision wizard** (`mdk provision-wizard`, `mdk provision --destroy`): creates, updates and
+  removes an environment in AWS, with secrets straight into SSM, a reviewed change set, typed
+  confirmations before anything destructive, and the first release and database load.
+- **Safety:** no secret on a command line or in a log; AWS logins never reach a store's scripts;
+  the kit is scanned for credentials before it is committed.
+- **Dashboard:** **Turn off** button; `mdk dashboard` restarts a dashboard running older code.
 
 ### 1.2.0
 

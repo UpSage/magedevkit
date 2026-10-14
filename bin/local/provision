@@ -1,0 +1,42 @@
+#!/bin/bash
+
+set -e
+set -o pipefail
+
+# PLATFORM_DIR, MAGENTO and the shared helpers (ui.sh, env.sh, paths.sh).
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
+
+# Provision wizard: creates or updates the AWS side of one pipeline-kit
+# environment (the CloudFormation stack mdk-<app>-<env> and its secrets in
+# SSM), follows its first release and can load a database — see
+# bin/lib/provision-engine.sh. The browser version is
+# bin/local/provision-wizard (also on the dashboard's Pipeline tab).
+#
+#   mdk provision [ENV]             create or update ENV
+#   mdk provision --destroy ENV     remove ENV from AWS (asks for its typed name)
+
+PROVISION_DESTROY="${PROVISION_DESTROY:-0}"
+PROVISION_ENV="${PROVISION_ENV:-}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --destroy) PROVISION_DESTROY=1 ;;
+        -h|--help) script_help "$0"; exit 0 ;;
+        -*) fail "Unknown option '$1' (expected --destroy)." ;;
+        *) PROVISION_ENV="$1" ;;
+    esac
+    shift
+done
+[ -z "$PROVISION_ENV" ] || valid_env_name "$PROVISION_ENV" || fail "'$PROVISION_ENV' isn't an environment name."
+[ "$PROVISION_DESTROY" = 0 ] || [ -n "$PROVISION_ENV$PRESET_PROVISION_ENV" ] || fail "Usage: mdk provision --destroy ENV"
+export PROVISION_DESTROY PROVISION_ENV
+
+require_env_file
+
+# One wizard at a time per instance.
+wizard_lock
+if [ "$PROVISION_DESTROY" = 1 ]; then ui_flow_begin unprovision; else ui_flow_begin provision; fi
+ui_log_to_file provision
+
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/provision-engine.sh"

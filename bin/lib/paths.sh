@@ -82,7 +82,7 @@ cmd_hint() {
         return
     fi
     case "$sub" in
-        setup|setup-wizard|refresh-wizard|version-wizard|pipeline|pipeline-wizard|rebuild|rebuild-wizard) printf 'cd %s && bin/local/%s' "$PLATFORM_DIR" "$sub${*:+ $*}" ;;
+        setup|setup-wizard|refresh-wizard|version-wizard|pipeline|pipeline-wizard|provision|provision-wizard|rebuild|rebuild-wizard) printf 'cd %s && bin/local/%s' "$PLATFORM_DIR" "$sub${*:+ $*}" ;;
         mode|ownership|permissions) printf 'cd %s && bin/%s/%s' "$PLATFORM_DIR" "$sub" "$*" ;;
         sync-media) printf 'cd %s && bin/sync-media-to-s3' "$PLATFORM_DIR" ;;
         build|module) printf 'cd %s && bin/local/magento-%s' "$PLATFORM_DIR" "$sub${*:+ $*}" ;;

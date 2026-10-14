@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 
+import pipeline
 import webcore
 # Re-exported, so callers keep using ops.<name>.
 from destroy import destroy, destroy_check, destroy_status  # noqa: F401
@@ -37,7 +38,7 @@ MAGENTO_LOGS = ("system", "exception", "debug")
 LOG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.log$")
 # <flow>[-<n>]-<stamp>.log: bin/lib/ui.sh ui_log_to_file and server.py (which
 # adds -<n> when two runs start in the same second).
-RUN_LOG_RE = re.compile(r"^(setup|refresh|version|pipeline|rebuild|ownership)(?:-\d+)?-(\d{8}-\d{6})\.log$")
+RUN_LOG_RE = re.compile(r"^(setup|refresh|version|pipeline|provision|rebuild|ownership)(?:-\d+)?-(\d{8}-\d{6})\.log$")
 
 # name → definition. argv paths are relative to the checkout. `mutating`
 # actions take the checkout lock; `confirm` is the dialog text the page shows.
@@ -99,6 +100,9 @@ WORKFLOWS = {
     # Writes the pipeline kit into magento/deploy/ (bin/local/pipeline) —
     # needs magento/ to be a git checkout, since the kit is committed with it.
     "pipeline": {"label": "Make pipeline-ready", "requires_env": True, "requires_repo": True},
+    # Creates or updates one kit target's AWS side (bin/local/provision) —
+    # the target must be one deploy/pipeline.json lists.
+    "provision": {"label": "Provision AWS environment", "requires_env": True, "requires_repo": True, "arg": "target"},
     # Full rebuild (bin/local/rebuild), optionally after composer install /
     # update — composer alone never finishes a change (setup:upgrade, DI
     # compile and static content have to follow).
@@ -370,6 +374,11 @@ def run_action(e, name, body, all_envs):
             os.close(lock_fd)  # the runner holds its inherited copy now
 
 
+def pipeline_targets(e):
+    """The environments in the instance's deploy/pipeline.json (none when it has no kit)."""
+    return pipeline.info(e).get("targets") or []
+
+
 def start_workflow(e, flow, all_envs, body=None):
     e.require_writable()
     if flow not in WORKFLOWS:
@@ -382,6 +391,12 @@ def start_workflow(e, flow, all_envs, body=None):
         if model == (e.env.get("FILE_OWNERSHIP") or "single"):
             raise OpError(409, "This instance already uses %s ownership." % model)
         args, label = [model], "Switch file ownership to %s" % model
+    elif WORKFLOWS[flow].get("arg") == "target":
+        target = (body or {}).get("target")
+        known = [t.get("env") for t in pipeline_targets(e)]
+        if not isinstance(target, str) or target not in known:
+            raise OpError(400, "Choose one of the kit's environments.", ", ".join(known) or "The kit has none yet.")
+        args, label = [target], "Provision %s" % target
     elif WORKFLOWS[flow].get("arg") == "composer":
         mode, pkgs = parse_composer(body)
         args = ([mode] if mode else []) + pkgs

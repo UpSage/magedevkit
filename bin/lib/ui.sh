@@ -434,6 +434,24 @@ UI_STEPS_account=(
     "Check"
     "Done"
 )
+UI_STEPS_provision=(
+    "Target"
+    "Account"
+    "Checks"
+    "Secrets"
+    "Review"
+    "Apply"
+    "First release"
+    "Database"
+    "Done"
+)
+UI_STEPS_unprovision=(
+    "Target"
+    "Account"
+    "Confirm"
+    "Remove"
+    "Done"
+)
 UI_STEPS_pipeline=(
     "Store check"
     "Target"

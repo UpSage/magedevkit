@@ -5,7 +5,8 @@
 # (bin/local/rebuild) or `ownership single|two-owner`
 # (bin/ownership/<model>; started by the dashboard, since it may need the sudo
 # password, which the wizard asks for on its page), or `account add|import|login
-# NAME` (bin/local/aws-account: MageDevKit's AWS connections — no instance).
+# NAME` (bin/local/aws-account: MageDevKit's AWS connections — no instance), or
+# `provision [ENV] [--destroy]` (bin/local/provision: an environment's AWS side).
 # Called by
 # bin/local/{setup,refresh,version,pipeline,rebuild}-wizard and the dashboard;
 # see bin/lib/web-wizard/server.py.
@@ -48,6 +49,20 @@ if [ "$FLOW" = account ]; then
     unset PLATFORM_INSTANCE_DIR
 fi
 export ACCOUNT_ACTION ACCOUNT_NAME
+# provision [ENV] [--destroy] — which environment, and whether to remove it.
+PROVISION_ENV=""
+PROVISION_DESTROY=0
+if [ "$FLOW" = provision ]; then
+    while [ $# -gt 0 ] && [[ "$1" != --no-browser && "$1" != --port ]]; do
+        case "$1" in
+            --destroy) PROVISION_DESTROY=1 ;;
+            *) [[ "$1" =~ ^[a-z][a-z0-9-]{1,15}$ ]] || { echo "Not an environment name: $1" >&2; exit 1; }
+               PROVISION_ENV="$1" ;;
+        esac
+        shift
+    done
+fi
+export PROVISION_ENV PROVISION_DESTROY
 PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/ui.sh"
@@ -91,6 +106,10 @@ case "$FLOW" in
         SCRIPT="$PLATFORM_DIR/bin/ownership/$MODEL"; TERMINAL_CMD="$(cmd_hint ownership "$MODEL")"
         require_env_file
         ;;
+    provision)
+        SCRIPT="$PLATFORM_DIR/bin/local/provision"; TERMINAL_CMD="$(cmd_hint provision ${PROVISION_ENV:+"$PROVISION_ENV"})"
+        require_env_file
+        ;;
     account)
         case "$ACCOUNT_ACTION" in
             add|import) ;;
@@ -99,7 +118,7 @@ case "$FLOW" in
         esac
         SCRIPT="$PLATFORM_DIR/bin/local/aws-account"; TERMINAL_CMD="mdk aws $ACCOUNT_ACTION${ACCOUNT_NAME:+ $ACCOUNT_NAME}"
         ;;
-    *) fail "Unknown flow '$FLOW' (expected setup, refresh, version, pipeline, rebuild, ownership or account)." ;;
+    *) fail "Unknown flow '$FLOW' (expected setup, refresh, version, pipeline, rebuild, ownership, account or provision)." ;;
 esac
 
 command -v python3 >/dev/null 2>&1 \
@@ -139,10 +158,11 @@ case "$FLOW" in
     rebuild) TITLE="Magento rebuild" ;;
     ownership) TITLE="File ownership switch" ;;
     account) TITLE="AWS connection wizard" ;;
+    provision) TITLE="$([ "$PROVISION_DESTROY" = 1 ] && echo "Remove AWS environment" || echo "Provision wizard")" ;;
     *) TITLE="Magento setup wizard" ;;
 esac
 STOPS="${FLOW/version/version switch}"
-[ "$FLOW" = account ] && STOPS="wizard"
+[ "$FLOW" = account ] || [ "$FLOW" = provision ] && STOPS="wizard"
 cat <<MSG
 
   $TITLE is running.

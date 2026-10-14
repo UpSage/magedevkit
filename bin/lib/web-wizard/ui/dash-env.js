@@ -576,7 +576,7 @@ function PipelineTab(env) {
     CardHeader(CardTitle('Targets'), CardDescription('Each environment the kit deploys to. Pushing the kit to a target’s branch is what starts its pipeline.')),
     CardContent(targets.length
       ? Table(
-        TableHeader(TableRow(['Environment', 'Store', 'AWS', 'Deploys from', 'Kit on that branch'].map((t) => TableHead(t)))),
+        TableHeader(TableRow(['Environment', 'Store', 'AWS', 'Deploys from', 'Kit on that branch', ''].map((t) => TableHead(t)))),
         TableBody(targets.map((t) => TableRow(
           TableCell(t.env, 'font-medium'),
           TableCell(t.domain ? TextLink({ href: `https://${t.domain}/`, text: t.domain, external: true }) : '—'),
@@ -584,7 +584,13 @@ function PipelineTab(env) {
           TableCell(`${t.repo || '?'} @ ${t.branch || '?'}`, 'text-muted-foreground'),
           TableCell((g.kitOnBranch || {})[t.branch]
             ? Badge(`On origin/${t.branch}`, 'success', 'check')
-            : Badge(`Not on origin/${t.branch} yet`, 'secondary'))))))
+            : Badge(`Not on origin/${t.branch} yet`, 'secondary')),
+          TableCell(Button({
+            variant: 'outline', size: 'sm', iconName: 'cloud', label: 'Provision',
+            disabled: envBlocked(env) || !(env.workflows.provision || {}).available || p.status !== 'current',
+            title: p.status === 'current' ? `Create or update ${t.env} in AWS` : 'Bring the kit up to date first',
+            onClick: () => startWorkflow(env, 'provision', { target: t.env }, { label: `Provision ${t.env}` }),
+          }), 'text-right')))))
       : h('p', { class: 'text-muted-foreground text-sm', text: 'No targets yet — the pipeline wizard asks for the first one (for example dev).' })));
 
   const ahead = g.ahead != null ? `${g.ahead} ahead, ${g.behind} behind ${g.upstream}` : null;
