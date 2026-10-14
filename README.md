@@ -808,12 +808,14 @@ browser ──> dashboard.py   (127.0.0.1 only; status + JSON API)
               ├─ gitrepo.py the Git tab        pipeline.py  the Pipeline tab
               ├─ modules.py the Modules tab (reads config.php, module.xml, composer.lock)
               ├─ releases.py Magento releases from Adobe (shared with the wizards' version menus)
+              ├─ awsaccounts.py the AWS accounts page: MageDevKit's own AWS connections
+              │                 (bin/lib/aws-credentials.py, aws-profiles.py; never ~/.aws)
               └─ webcore.py shared with the wizard server: auth, login/static files, headers,
-                            redaction, records, child-process environment (no tokens)
+                            redaction, records, child-process environment (no tokens, no AWS logins)
                     │
                     ▼
 <repo>/bin/platform | bin/magento | bin/composer | bin/mode/* | bin/local/* | bin/lib/web-wizard/launch.sh
-   (run with PLATFORM_INSTANCE_DIR=<instance>)
+   (run with PLATFORM_INSTANCE_DIR=<instance>; the AWS connection and provision wizards included)
 ```
 
 - **Discovery.** There is no registry and nothing to keep up to date. The dashboard combines two
@@ -939,6 +941,19 @@ against fake instances and a fake `docker`, covering:
   composer.lock back when composer fails);
 - Magento releases (`tests/test_releases.py`: Adobe's file, the stack check behind a derived
   entry, offline fallback, what an environment can move to);
+- MageDevKit's AWS connections (`tests/test_aws_account.py`: keys only in MageDevKit's own
+  files, `~/.aws` never changed, import of one profile, SSO and role connections, status checks
+  that ignore AWS keys exported in the shell, the wrong account refused, the AWS accounts page);
+- the pipeline kit's CloudFormation template (`tests/test_cfn_check.py`: the offline checker,
+  per-environment image repositories, the box document's allow-list, an operator policy without
+  IAM or a shell, no secret parameters) and its scripts on the box (`tests/test_box.py`: refused
+  arguments, the published status, the non-production safety settings in `env.php`);
+- the pipeline wizard (`tests/test_pipeline.py`: generating, committing, hand edits, upgrading
+  from an older kit, production or not, no credentials in a commit);
+- the provision wizard against a fake `aws` (`tests/test_provision.py`: creating, keeping secrets,
+  secrets never on a command line or in the log, the wrong account refused, the typed name before
+  the box could be replaced, removing an environment) and the dashboard's Provision workflow
+  (`tests/test_ops_provision.py`). No test ever calls the real AWS CLI;
 - `kit.js` and the dashboard's tabs in a real browser (`tests/test_js.py` runs
   `tests/js/kit-tests.html` and `tests/js/dash-tests.html` in headless Chrome/Chromium; skipped
   when none is installed).
