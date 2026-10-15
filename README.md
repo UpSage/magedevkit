@@ -108,6 +108,7 @@ magedevkit/
 │       ├── ui.sh               Prompts, progress, log/fail/cancel, the lock — terminal and browser
 │       ├── env.sh util.sh      Env-file reads/writes, validators, version compare, composer rules
 │       ├── paths.sh            Where an instance's files live
+│       ├── generated.sh        Out-of-date compiled code: generated_stale, clear_generated
 │       ├── *-engine.sh         The flows: setup, refresh, version, rebuild, pipeline, mode, …
 │       ├── setup/              Setup's steps, 01-preflight … 11-finish
 │       ├── db-backup.sh        Every database call (db_client), dumps, restore
@@ -939,6 +940,9 @@ against fake instances and a fake `docker`, covering:
   may run) and `bin/local/magento-module` (`tests/test_magento_module.py`: the command order with
   and without the build, production, the update check, dry runs, and putting composer.json and
   composer.lock back when composer fails);
+- out-of-date compiled code (`tests/test_generated_stale.py`: what counts as stale, and what
+  `bin/magento` does about it in each mode) and Build Magento's order (`tests/test_magento_build.py`:
+  `generated/` cleared before the first `bin/magento` call);
 - Magento releases (`tests/test_releases.py`: Adobe's file, the stack check behind a derived
   entry, offline fallback, what an environment can move to);
 - MageDevKit's AWS connections (`tests/test_aws_account.py`: keys only in MageDevKit's own
@@ -1096,6 +1100,11 @@ initializes the volume, and `app/etc/env.php` keeps its own copy. Either run the
 - **Safety:** no secret on a command line or in a log; AWS logins never reach a store's scripts;
   the kit is scanned for credentials before it is committed.
 - **Dashboard:** **Turn off** button; `mdk dashboard` restarts a dashboard running older code.
+- **Out-of-date compiled code no longer blocks a store:** after a module is removed or renamed,
+  every `bin/magento` command used to fail with `Class … not found` (Build Magento included).
+  `bin/magento` now checks before each command. In developer/default mode it clears the stale
+  `generated/` itself; in production mode it warns. Build Magento always starts from a clean
+  `generated/`.
 
 ### 1.2.0
 

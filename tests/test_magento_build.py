@@ -22,6 +22,9 @@ if [ "$*" = "ps --status running --services" ]; then
 fi
 exit 0
 """
+# Build Magento's first step on generated/ (bin/lib/generated.sh's clear_generated).
+CLEAR = ["platform exec -T --user %s php rm -rf generated/code generated/metadata",
+         "platform exec -T --user %s php mkdir -p generated/code generated/metadata"]
 
 
 class MagentoBuild(unittest.TestCase):
@@ -49,12 +52,21 @@ class MagentoBuild(unittest.TestCase):
             e.pop(k, None)
         p = subprocess.run([os.path.join(self.repo, "bin", "local", "magento-build")] + list(args), env=e,
                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        calls = [l for l in self.all_calls() if not l.startswith("platform ")]
+        return p, calls
+
+    def all_calls(self):
         try:
             with open(self.calls) as f:
-                calls = [l.strip() for l in f if not l.startswith("platform ")]
+                return [l.strip() for l in f]
         except OSError:
-            calls = []
-        return p, calls
+            return []
+
+    def calls_with_platform(self):
+        """Every call but the php-running check, and CLEAR for this user."""
+        user = "%d:%d" % (os.getuid(), os.getgid())
+        calls = [l for l in self.all_calls() if not l.startswith("platform ps ")]
+        return calls, [c % user for c in CLEAR]
 
     def test_order(self):
         p, calls = self.build()
@@ -62,6 +74,26 @@ class MagentoBuild(unittest.TestCase):
         self.assertEqual(calls, ["magento maintenance:enable", "magento setup:upgrade", "magento setup:di:compile",
                                  "magento setup:static-content:deploy -f", "magento cache:flush",
                                  "magento maintenance:disable"])
+
+    def test_clears_generated_before_the_first_magento_call(self):
+        # A module removed since the last compile breaks every bin/magento
+        # command (maintenance:enable too) until generated/ is gone.
+        p, _ = self.build("--composer", "install")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        calls, clear = self.calls_with_platform()
+        self.assertEqual(calls[:4], ["composer install --no-interaction"] + clear + ["magento maintenance:enable"])
+        os.remove(self.calls)
+        p, _ = self.build("--module", "disable", "Vendor_Mod")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        calls, clear = self.calls_with_platform()
+        self.assertEqual(calls[:3], clear + ["magento module:disable --clear-static-content Vendor_Mod"])
+
+    def test_steps_skip_the_wrappers_check(self):
+        helpers.write(os.path.join(self.repo, "bin", "magento"),
+                      '#!/bin/bash\necho "magento $* skip=${MDK_SKIP_GENERATED_CHECK:-}" >> "$CALLS"\n', 0o755)
+        p, calls = self.build()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertTrue(calls and all(c.endswith("skip=1") for c in calls), calls)
 
     def test_composer_first_and_production_lock(self):
         with open(os.path.join(self.inst, ".env"), "a") as f:
@@ -71,6 +103,8 @@ class MagentoBuild(unittest.TestCase):
         self.assertEqual(calls[:3], ["permissions unlock", "composer update --no-interaction amasty/shipping-rules",
                                      "magento maintenance:enable"])
         self.assertEqual(calls[-1], "permissions lock")
+        everything, clear = self.calls_with_platform()
+        self.assertLess(everything.index("permissions unlock"), everything.index(clear[0]))
 
     def test_failure_turns_maintenance_off(self):
         p, calls = self.build(FAIL_ON="setup:di:compile")

@@ -11,6 +11,9 @@
 
 # shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/stack.sh"
+# clear_generated (09-install)
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/generated.sh"
 
 # The steps live in bin/lib/setup/, one file per part, sourced in this order
 # at the top level — they share variables (FRESH_INSTALL, DO_DB_REFRESH, …)

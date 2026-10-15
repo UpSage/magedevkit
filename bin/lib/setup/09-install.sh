@@ -116,8 +116,7 @@ if [ "$FRESH_INSTALL" = 1 ]; then
     # reset_compile_state() (bin/lib/magento-rebuild.sh) applies before recompiling.
     if [ -d "$MAGENTO_DIR/generated/code" ] || [ -d "$MAGENTO_DIR/generated/metadata" ]; then
         log "Clearing stale generated code from a previous attempt ..."
-        "$PLATFORM_DIR/bin/platform" exec --user "$EXEC_USER" php rm -rf generated/code generated/metadata
-        "$PLATFORM_DIR/bin/platform" exec --user "$EXEC_USER" php mkdir -p generated/code generated/metadata
+        clear_generated
     fi
 
     # With no DB import afterwards (a fresh vanilla install), the admin

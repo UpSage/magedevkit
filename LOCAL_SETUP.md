@@ -221,6 +221,12 @@ Operations tab lists every run.
 `mdk platform logs php` for PHP errors, and Magento's own log:
 `mdk platform exec php tail -f var/log/exception.log`.
 
+**Every `bin/magento` command fails with `Class "…" not found` in `generated/code/…/Interceptor.php`**
+The compiled code is from before a module was removed or renamed (a pull, a branch switch, a deleted
+`app/code` folder). In developer and default mode MageDevKit spots this and clears it before the
+command runs, then says so. In production mode it warns instead. Either way, **Build Magento**
+(`mdk build`) clears it and compiles again.
+
 **Push or fetch asks for a login again / "Authentication failed"**
 The token expired or lost access. On the dashboard's Git tab, **Forget** the saved login and
 fetch again with a new token (it's saved for that repo only).

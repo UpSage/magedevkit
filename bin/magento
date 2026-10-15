@@ -14,6 +14,29 @@ require_env_file
 # shellcheck disable=SC1091
 source "$PLATFORM_DIR/bin/lib/identity.sh"
 
+# Out-of-date compiled code would crash this command before it starts (see
+# bin/lib/generated.sh). Developer/default mode doesn't need it — clear it
+# and Magento regenerates what it uses. Production serves the store from
+# it, so leave it and say what to run. When the check itself fails, nothing
+# is cleared. mdk build clears it itself and sets MDK_SKIP_GENERATED_CHECK
+# for its own steps.
+if [ "${MDK_SKIP_GENERATED_CHECK:-}" != 1 ]; then
+    # shellcheck disable=SC1091
+    source "$PLATFORM_DIR/bin/lib/generated.sh"
+    stale=0
+    reason="$(generated_stale)" || stale=$?
+    if [ "$stale" = 2 ]; then
+        echo "⚠ Couldn't check whether the compiled code is up to date — running the command anyway." >&2
+    elif [ "$stale" = 0 ]; then
+        if [ "$(env_get "$ENV_FILE" MAGENTO_MODE)" = production ]; then
+            echo "⚠ Compiled code looks out of date ($reason). If this fails with 'Class … not found', run Build Magento: $(cmd_hint build)" >&2
+        else
+            clear_generated
+            echo "Compiled code was out of date ($reason) — cleared it; Magento regenerates it as needed. Run Build Magento for a full compile." >&2
+        fi
+    fi
+fi
+
 # Nobody at a keyboard (browser wizard, dashboard, scripts): no TTY for the
 # container, and Magento's --no-interaction, so a confirmation question
 # (e.g. app:config:import's "Do you want to continue [yes/no]?" during

@@ -16,6 +16,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/bootstrap.sh"
 #   mdk build --module enable|disable Vendor_Module ...
 #
 #   [composer install | update [packages] | require --update-with-dependencies specs]
+#   rm -rf generated/code generated/metadata
 #   [bin/magento module:enable|disable --clear-static-content modules]
 #   bin/magento maintenance:enable
 #   bin/magento setup:upgrade
@@ -61,6 +62,12 @@ if [ -n "$MODULE_OP" ]; then
 fi
 
 require_env_file
+# EXEC_USER for clear_generated
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/identity.sh"
+# clear_generated — see bin/lib/generated.sh.
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/generated.sh"
 MAGENTO_MODE="$(env_get "$ENV_FILE" MAGENTO_MODE)"
 [ "$QUICK" = 0 ] || [ "$MAGENTO_MODE" != production ] \
     || fail "--quick skips di:compile and static content, which production mode needs — run the full build."
@@ -120,6 +127,15 @@ elif [ -n "$COMPOSER_MODE" ]; then
     step "composer $COMPOSER_MODE${PACKAGES[*]:+ ${PACKAGES[*]}}"
     "$PLATFORM_DIR/bin/composer" "$COMPOSER_MODE" --no-interaction "${PACKAGES[@]}"
 fi
+
+# Compiled code from before a module was removed or renamed makes every
+# bin/magento command fail before it starts — maintenance:enable included —
+# so the build could never get to the compile that fixes it (see
+# bin/lib/generated.sh). setup:upgrade would delete these a few seconds later
+# anyway; from here on the wrapper needn't check them on every step.
+step "clearing generated code"
+clear_generated
+export MDK_SKIP_GENERATED_CHECK=1
 
 if [ -n "$MODULE_OP" ]; then
     step "module:$MODULE_OP ${MODULES[*]}"

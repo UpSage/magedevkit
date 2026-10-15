@@ -4,6 +4,10 @@
 # Expects log(), fail(), ui_* (bin/lib/ui.sh), PLATFORM_DIR, MAGENTO,
 # ENV_FILE and EXEC_USER.
 
+# clear_generated
+# shellcheck disable=SC1091
+source "$PLATFORM_DIR/bin/lib/generated.sh"
+
 # REMOTE_STORAGE_DRIVER/BUCKET/REGION/KEY/SECRET, BASE_MEDIA_URL/
 # BASE_STATIC_URL/COOKIE_DOMAIN, MAGENTO_ADMIN_URI, and OPENSEARCH_INDEX_PREFIX
 # all come from the active env file (gitignored) — a per-machine choice
@@ -61,8 +65,7 @@ reset_compile_state() {
     # partial compile can never leave behind files this delete can't unlink —
     # no root escalation or chgrp/chmod dance needed, unlike before.
     log "Clearing generated code for a clean compile ..."
-    "$PLATFORM_DIR/bin/platform" exec --user "$EXEC_USER" php rm -rf generated/code generated/metadata
-    "$PLATFORM_DIR/bin/platform" exec --user "$EXEC_USER" php mkdir -p generated/code generated/metadata
+    clear_generated
 }
 
 # Everything after the database is in place: permissions, composer install,
